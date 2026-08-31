@@ -1,3 +1,4 @@
+//src\stratum\stratum_client.cpp
 #include "stratum/stratum_client.h"
 
 #include "stratum/stratum_message.h"

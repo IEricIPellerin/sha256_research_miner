@@ -1,3 +1,4 @@
+//tests\test_work_allocator.cpp
 #include "mining/work_allocator.h"
 #include "test_support.h"
 

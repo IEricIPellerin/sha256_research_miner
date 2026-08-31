@@ -1,3 +1,4 @@
+//src\stratum\stratum_message.cpp
 #include "stratum/stratum_message.h"
 
 #include <stdexcept>

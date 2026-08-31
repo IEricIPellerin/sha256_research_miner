@@ -1,3 +1,4 @@
+//include\mining\mining_controller.h
 #pragma once
 
 #include "config/config.h"

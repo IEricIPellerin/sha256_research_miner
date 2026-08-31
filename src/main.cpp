@@ -1,3 +1,4 @@
+//src\main.cpp
 #include "config/config.h"
 #include "mining/mining_controller.h"
 

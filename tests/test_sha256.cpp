@@ -1,3 +1,4 @@
+//tests\test_sha256.cpp
 #include "crypto/reduced_sha256.h"
 #include "crypto/sha256.h"
 #include "test_support.h"

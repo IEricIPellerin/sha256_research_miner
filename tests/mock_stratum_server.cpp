@@ -1,3 +1,4 @@
+//tests\mock_stratum_server.cpp
 #include <asio.hpp>
 #include <chrono>
 #include <iostream>

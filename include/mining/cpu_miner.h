@@ -1,3 +1,4 @@
+//include\mining\cpu_miner.h
 #pragma once
 
 #include "bitcoin/difficulty.h"

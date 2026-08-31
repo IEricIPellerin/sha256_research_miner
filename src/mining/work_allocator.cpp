@@ -1,3 +1,4 @@
+//src\mining\work_allocator.cpp
 #include "mining/work_allocator.h"
 
 #include <algorithm>

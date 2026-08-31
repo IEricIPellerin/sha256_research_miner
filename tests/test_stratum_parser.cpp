@@ -1,3 +1,4 @@
+//tests\test_stratum_parser.cpp
 #include "stratum/stratum_job.h"
 #include "stratum/stratum_message.h"
 #include "test_support.h"

@@ -1,3 +1,4 @@
+//src\stratum\stratum_job.cpp
 #include "stratum/stratum_job.h"
 
 #include "bitcoin/coinbase.h"

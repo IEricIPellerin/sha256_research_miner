@@ -1,3 +1,4 @@
+//include\mining\solution.h
 #pragma once
 
 #include <cstdint>

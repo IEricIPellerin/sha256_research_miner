@@ -1,3 +1,4 @@
+//include\stratum\stratum_message.h
 #pragma once
 
 #include <nlohmann/json.hpp>

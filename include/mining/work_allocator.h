@@ -1,3 +1,4 @@
+//include\mining\work_allocator.h
 #pragma once
 
 #include "checkpoint/state_store.h"

@@ -1,3 +1,4 @@
+//include\stratum\stratum_job.h
 #pragma once
 
 #include "bitcoin/block_header.h"

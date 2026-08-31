@@ -1,3 +1,4 @@
+//src\crypto\reduced_sha256.cpp
 #include "crypto/reduced_sha256.h"
 
 #include "crypto/sha256d.h"

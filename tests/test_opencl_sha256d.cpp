@@ -1,3 +1,4 @@
+//tests\test_opencl_sha256d.cpp
 #include "bitcoin/block_header.h"
 #include "crypto/sha256.h"
 #include "crypto/sha256d.h"

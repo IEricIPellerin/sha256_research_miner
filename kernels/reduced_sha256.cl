@@ -1,3 +1,5 @@
+// kernels\reduced_sha256.cl
+
 // Research-only kernel. It reuses sha256d80 from sha256d.cl when concatenated
 // by a research host and aggregates bit counts on-device.
 __kernel void aggregate_reduced_sha256d(__global const uchar* prefix,

@@ -1,3 +1,4 @@
+//include\bitcoin\block_header.h
 #pragma once
 
 #include "crypto/sha256.h"

@@ -1,3 +1,4 @@
+//src\mining\mining_controller.cpp
 #include "mining/mining_controller.h"
 
 #include "bitcoin/block_header.h"

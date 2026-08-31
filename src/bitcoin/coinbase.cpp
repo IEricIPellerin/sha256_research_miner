@@ -1,3 +1,4 @@
+//src\bitcoin\coinbase.cpp
 #include "bitcoin/coinbase.h"
 
 #include "crypto/sha256d.h"

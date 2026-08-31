@@ -1,3 +1,4 @@
+//include\bitcoin\coinbase.h
 #pragma once
 
 #include "crypto/sha256.h"

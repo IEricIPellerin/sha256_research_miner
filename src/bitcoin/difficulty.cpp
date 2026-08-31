@@ -1,3 +1,4 @@
+//src\bitcoin\difficulty.cpp
 #include "bitcoin/difficulty.h"
 
 #include "crypto/sha256.h"

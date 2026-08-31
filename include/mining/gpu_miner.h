@@ -1,3 +1,4 @@
+//include\mining\gpu_miner.h
 #pragma once
 
 #include "mining/cpu_miner.h"

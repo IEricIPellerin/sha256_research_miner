@@ -1,3 +1,4 @@
+//include\logging\result_logger.h
 #pragma once
 
 #include "mining/solution.h"

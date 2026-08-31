@@ -1,3 +1,4 @@
+//src\mining\gpu_miner.cpp
 #include "mining/gpu_miner.h"
 
 #include "bitcoin/block_header.h"

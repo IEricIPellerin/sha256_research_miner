@@ -1,3 +1,5 @@
+// kernels\sha256d.cl
+
 // SHA256d over an 80-byte Bitcoin header. The host supplies the first 76
 // bytes; gid selects the little-endian nonce. Candidate output is bounded.
 

@@ -1,3 +1,4 @@
+//include\stratum\stratum_client.h
 #pragma once
 
 #include "config/config.h"

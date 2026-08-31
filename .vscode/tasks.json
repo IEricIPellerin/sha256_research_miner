@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: configure",
+      "type": "shell",
+      "command": "cmake --preset windows-release",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: build",
+      "type": "shell",
+      "command": "cmake --build --preset windows-release",
+      "dependsOn": "CMake: configure",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "CTest: all",
+      "type": "shell",
+      "command": "ctest --preset windows-release",
+      "dependsOn": "CMake: build",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
+

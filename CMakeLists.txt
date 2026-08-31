@@ -1,0 +1,129 @@
+cmake_minimum_required(VERSION 3.24)
+project(sha256_research_miner VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Portable LLVM-MinGW builds can run from any terminal without toolchain DLLs.
+# MSVC and other platforms are unaffected.
+if(MINGW)
+  add_link_options(-static)
+endif()
+
+option(SRM_ENABLE_OPENCL "Build the optional OpenCL GPU backend" ON)
+option(SRM_BUILD_TESTS "Build deterministic tests" ON)
+
+include(FetchContent)
+
+find_package(nlohmann_json 3.11 CONFIG QUIET)
+if(NOT nlohmann_json_FOUND)
+  FetchContent_Declare(nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d)
+  FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
+find_path(ASIO_INCLUDE_DIR asio.hpp)
+if(NOT ASIO_INCLUDE_DIR)
+  FetchContent_Declare(asio
+    URL https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-30-2.tar.gz)
+  FetchContent_GetProperties(asio)
+  if(NOT asio_POPULATED)
+    FetchContent_Populate(asio)
+  endif()
+  set(ASIO_INCLUDE_DIR "${asio_SOURCE_DIR}/asio/include")
+endif()
+
+set(SRM_SOURCES
+  src/config/config.cpp
+  src/checkpoint/state_store.cpp
+  src/stratum/stratum_client.cpp
+  src/stratum/stratum_message.cpp
+  src/stratum/stratum_job.cpp
+  src/bitcoin/coinbase.cpp
+  src/bitcoin/merkle.cpp
+  src/bitcoin/block_header.cpp
+  src/bitcoin/difficulty.cpp
+  src/crypto/sha256.cpp
+  src/crypto/sha256d.cpp
+  src/crypto/reduced_sha256.cpp
+  src/mining/work_allocator.cpp
+  src/mining/cpu_miner.cpp
+  src/mining/gpu_miner.cpp
+  src/mining/mining_controller.cpp
+  src/telemetry/telemetry.cpp
+  src/logging/result_logger.cpp)
+
+add_library(srm_core ${SRM_SOURCES})
+target_include_directories(srm_core PUBLIC include PRIVATE "${ASIO_INCLUDE_DIR}")
+target_compile_definitions(srm_core PRIVATE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+target_link_libraries(srm_core PUBLIC nlohmann_json::nlohmann_json)
+
+if(MSVC)
+  target_compile_options(srm_core PRIVATE /W4 /permissive- /EHsc /utf-8)
+  target_compile_definitions(srm_core PRIVATE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+  target_compile_options(srm_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(WIN32)
+  target_link_libraries(srm_core PRIVATE ws2_32)
+endif()
+
+if(SRM_ENABLE_OPENCL)
+  find_package(OpenCL QUIET)
+  if(OpenCL_FOUND)
+    target_compile_definitions(srm_core PUBLIC SRM_HAS_OPENCL=1)
+    target_link_libraries(srm_core PRIVATE OpenCL::OpenCL)
+  else()
+    message(STATUS "OpenCL SDK not found: building CPU backend and GPU diagnostics fallback")
+  endif()
+endif()
+
+add_executable(sha256_research_miner src/main.cpp)
+target_link_libraries(sha256_research_miner PRIVATE srm_core)
+
+add_custom_command(TARGET sha256_research_miner POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+          "$<TARGET_FILE_DIR:sha256_research_miner>/kernels")
+
+if(SRM_BUILD_TESTS)
+  enable_testing()
+  add_executable(srm_tests
+    tests/test_main.cpp
+    tests/test_sha256.cpp
+    tests/test_sha256d.cpp
+    tests/test_genesis_block.cpp
+    tests/test_historical_block.cpp
+    tests/test_merkle.cpp
+    tests/test_target.cpp
+    tests/test_stratum_parser.cpp
+    tests/test_checkpoint.cpp
+    tests/test_work_allocator.cpp
+    tests/test_opencl_sha256d.cpp)
+  target_link_libraries(srm_tests PRIVATE srm_core)
+  target_include_directories(srm_tests PRIVATE tests)
+  target_compile_definitions(srm_tests PRIVATE SRM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  if(OpenCL_FOUND)
+    target_link_libraries(srm_tests PRIVATE OpenCL::OpenCL)
+  endif()
+  add_test(NAME deterministic_reference_tests COMMAND srm_tests)
+
+  add_executable(mock_stratum_server tests/mock_stratum_server.cpp)
+  target_include_directories(mock_stratum_server PRIVATE "${ASIO_INCLUDE_DIR}")
+  target_compile_definitions(mock_stratum_server PRIVATE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+  target_link_libraries(mock_stratum_server PRIVATE nlohmann_json::nlohmann_json)
+  if(WIN32)
+    target_compile_definitions(mock_stratum_server PRIVATE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(mock_stratum_server PRIVATE ws2_32)
+    add_test(NAME mock_stratum_end_to_end
+      COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_mock_integration.ps1"
+        -Miner "$<TARGET_FILE:sha256_research_miner>"
+        -Server "$<TARGET_FILE:mock_stratum_server>"
+        -ProjectRoot "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mock_stratum_end_to_end PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+  endif()
+endif()

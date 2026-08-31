@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "mode": "historical_test",
+  "header_id": "",
+  "current_round": 1,
+  "current_extranonce2": "",
+  "nonce_next": 0,
+  "nonce_end": 0,
+  "completed_ranges": [],
+  "completed_rounds": [],
+  "work_units": [],
+  "hashes_tested": 0,
+  "best_hash": "",
+  "best_nonce": null,
+  "statistics": {}
+}
+

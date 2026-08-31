@@ -1,0 +1,8 @@
+/build/
+/.vs/
+/.vscode/*.log
+/results/*.json
+/results/*.log
+/results/*.tmp
+!/results/.gitkeep
+/state/*.tmp

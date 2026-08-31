@@ -162,4 +162,3 @@ results/     journaux et candidats (ignorés par Git)
 
 La CI GitHub compile et exécute les tests CPU + mock sur `windows-latest`. Le test GPU s'active automatiquement sur une machine possédant le SDK et un périphérique OpenCL.
 
-

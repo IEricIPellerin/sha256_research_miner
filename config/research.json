@@ -1,0 +1,32 @@
+{
+  "mode": "historical_test",
+  "historical": {
+    "header_hex": "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d00000000",
+    "known_nonce": 2083236893,
+    "expected_hash": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+    "target_hex": "00000000ffff0000000000000000000000000000000000000000000000000000",
+    "scan_full_nonce_space": false,
+    "nonce_start": 2083236800,
+    "nonce_end": 2083237000
+  },
+  "research": {
+    "enabled": true,
+    "round_start": 1,
+    "round_end": 64,
+    "sample_count": 4096
+  },
+  "cpu": { "enabled": true, "threads": 30 },
+  "gpu": {
+    "enabled": true,
+    "platform": "auto",
+    "device": "auto",
+    "auto_tune": true
+  },
+  "logging": {
+    "directory": "results",
+    "save_session_log": true,
+    "save_block_candidates": true
+  },
+  "checkpoint": { "interval_ms": 2000 }
+}
+

@@ -1,0 +1,38 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-release",
+      "displayName": "Windows x64 Release (OpenCL auto-detect)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-release",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20",
+        "SRM_ENABLE_OPENCL": "ON",
+        "SRM_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-cpu-only",
+      "displayName": "Windows x64 Release (CPU only)",
+      "inherits": "windows-release",
+      "binaryDir": "${sourceDir}/build/windows-cpu-only",
+      "cacheVariables": { "SRM_ENABLE_OPENCL": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" },
+    { "name": "windows-cpu-only", "configurePreset": "windows-cpu-only", "configuration": "Release" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
+

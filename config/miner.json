@@ -1,0 +1,30 @@
+{
+  "mode": "live",
+  "ckpool": {
+    "host": "stratum.ckpool.org",
+    "port": 3333,
+    "username": "CHANGE_ME",
+    "password": "x",
+    "reconnect": true,
+    "reconnect_delay_ms": 2000
+  },
+  "cpu": { "enabled": true, "threads": 30 },
+  "gpu": {
+    "enabled": true,
+    "platform": "auto",
+    "device": "auto",
+    "auto_tune": true
+  },
+  "console": {
+    "refresh_ms": 1000,
+    "show_job_events": true,
+    "show_best_hash": true
+  },
+  "logging": {
+    "directory": "results",
+    "save_session_log": true,
+    "save_block_candidates": true
+  },
+  "checkpoint": { "interval_ms": 2000 }
+}
+

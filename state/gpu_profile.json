@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "device_name": "",
+  "vendor": "",
+  "driver": "",
+  "local_work_size": 0,
+  "global_work_size": 0,
+  "batch_size": 0,
+  "tuned": false
+}
+

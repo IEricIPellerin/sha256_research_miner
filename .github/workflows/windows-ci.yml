@@ -1,0 +1,19 @@
+name: Windows C++20 CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (CPU backend)
+        run: cmake -S . -B build -A x64 -DSRM_ENABLE_OPENCL=OFF -DSRM_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Deterministic and mock-Stratum tests
+        run: ctest --test-dir build -C Release --output-on-failure
+

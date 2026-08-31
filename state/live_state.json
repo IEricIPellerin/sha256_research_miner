@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "mode": "live",
+  "last_job_id": "",
+  "last_prevhash": "",
+  "extranonce1": "",
+  "extranonce2_size": 0,
+  "next_extranonce2_counter": 0,
+  "work_units": [],
+  "completed_extranonce2": [],
+  "completed_ranges": [],
+  "counters": {
+    "hashes": 0,
+    "cpu_hashes": 0,
+    "gpu_hashes": 0,
+    "shares": 0,
+    "accepted": 0,
+    "rejected": 0,
+    "stale_jobs": 0,
+    "headers_complete": 0
+  },
+  "best_hash": "",
+  "best_nonce": null,
+  "uptime_ms": 0
+}
+

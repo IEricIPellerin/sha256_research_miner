@@ -1,0 +1,7 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configurePreset": "windows-release",
+  "cmake.buildPreset": "windows-release",
+  "C_Cpp.default.cppStandard": "c++20"
+}
+

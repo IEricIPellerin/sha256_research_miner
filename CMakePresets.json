@@ -5,13 +5,14 @@
     {
       "name": "windows-release",
       "displayName": "Windows x64 Release (OpenCL auto-detect)",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-release",
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "20",
         "SRM_ENABLE_OPENCL": "ON",
-        "SRM_BUILD_TESTS": "ON"
+        "SRM_BUILD_TESTS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "C:/Users/ERICP/Desktop/Crypto/vcpkg/scripts/buildsystems/vcpkg.cmake"
       }
     },
     {

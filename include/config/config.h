@@ -47,11 +47,19 @@ struct HistoricalConfig {
   std::uint64_t nonce_start{0};
   std::uint64_t nonce_end{0x100000000ULL};
 };
+struct ResearchTraceAnalysisConfig {
+  bool enabled{false};
+  bool single_bit_flips{true};
+  unsigned neighbor_radius{2};
+  std::vector<std::uint32_t> control_nonces;
+  bool save_full_trajectories{true};
+};
 struct ResearchConfig {
   bool enabled{false};
   unsigned round_start{1};
   unsigned round_end{64};
   std::uint64_t sample_count{4096};
+  ResearchTraceAnalysisConfig trace_analysis;
 };
 
 struct BenchmarkConfig {

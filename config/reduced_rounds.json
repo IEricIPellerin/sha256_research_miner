@@ -13,7 +13,20 @@
     "enabled": true,
     "round_start": 64,
     "round_end": 64,
-    "sample_count": 4096
+    "sample_count": 4096,
+    "trace_analysis": {
+      "enabled": true,
+      "single_bit_flips": true,
+      "neighbor_radius": 2,
+      "save_full_trajectories": true,
+      "control_nonces": [
+        0,
+        1,
+        1000,
+        123456789,
+        4000000000
+      ]
+    }
   },
   "cpu": { "enabled": true, "threads": 30 },
   "gpu": { "enabled": true, "platform": "auto", "device": "auto", "auto_tune": true },

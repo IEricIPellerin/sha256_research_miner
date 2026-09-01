@@ -16,15 +16,21 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace srm::mining {
 namespace {
@@ -70,6 +76,767 @@ nlohmann::json sha256_rounds_json(const std::vector<crypto::Sha256RoundTrace>& r
     });
   }
   return result;
+}
+
+using ResearchState = std::array<std::uint32_t, 8>;
+using ResearchBlock = std::array<std::uint8_t, 64>;
+
+constexpr std::array<const char*, 8> kResearchRegisters{
+    "a", "b", "c", "d", "e", "f", "g", "h"};
+
+struct ResearchNonceSelection {
+  std::uint32_t nonce;
+  nlohmann::json labels;
+};
+
+struct ResearchTraceRecord {
+  std::uint32_t nonce;
+  nlohmann::json labels;
+  bitcoin::Header header;
+  crypto::ReducedSha256dTrace trace;
+  nlohmann::json trajectory;
+};
+
+void require_research(const bool condition, const std::string& detail) {
+  if (!condition) throw std::runtime_error("research trace analysis failed: " + detail);
+}
+
+std::uint32_t read_research_be32(const std::uint8_t* bytes) {
+  return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
+         (static_cast<std::uint32_t>(bytes[1]) << 16U) |
+         (static_cast<std::uint32_t>(bytes[2]) << 8U) |
+         static_cast<std::uint32_t>(bytes[3]);
+}
+
+ResearchState research_before_state(const crypto::Sha256RoundTrace& trace) {
+  return {trace.a_before, trace.b_before, trace.c_before, trace.d_before,
+          trace.e_before, trace.f_before, trace.g_before, trace.h_before};
+}
+
+ResearchState research_after_state(const crypto::Sha256RoundTrace& trace) {
+  return {trace.a_after, trace.b_after, trace.c_after, trace.d_after,
+          trace.e_after, trace.f_after, trace.g_after, trace.h_after};
+}
+
+nlohmann::json research_state_json(const ResearchState& state) {
+  auto value = nlohmann::json::object();
+  for (std::size_t i = 0; i < state.size(); ++i) {
+    value[kResearchRegisters[i]] = sha256_word_hex(state[i]);
+  }
+  return value;
+}
+
+ResearchState research_digest_words(const crypto::Digest& digest) {
+  ResearchState words{};
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    words[i] = read_research_be32(digest.data() + i * 4U);
+  }
+  return words;
+}
+
+unsigned research_word_hamming(const std::uint32_t left, const std::uint32_t right) {
+  return std::popcount(left ^ right);
+}
+
+unsigned research_state_hamming(const ResearchState& left, const ResearchState& right) {
+  unsigned total = 0;
+  for (std::size_t i = 0; i < left.size(); ++i) total += research_word_hamming(left[i], right[i]);
+  return total;
+}
+
+bool research_round_equal(const crypto::Sha256RoundTrace& left,
+                          const crypto::Sha256RoundTrace& right) {
+  return left.compression_index == right.compression_index && left.round_index == right.round_index &&
+         left.w == right.w && left.sum0 == right.sum0 && left.sum1 == right.sum1 &&
+         left.choice == right.choice && left.majority == right.majority &&
+         left.temp1 == right.temp1 && left.temp2 == right.temp2 &&
+         research_before_state(left) == research_before_state(right) &&
+         research_after_state(left) == research_after_state(right);
+}
+
+ResearchBlock research_final_block(const std::span<const std::uint8_t> message,
+                                   const std::size_t offset) {
+  require_research(offset <= message.size(), "invalid SHA-256 padding offset");
+  const auto remainder = message.size() - offset;
+  require_research(remainder < 56U, "analysis expects a single final SHA-256 padding block");
+  ResearchBlock block{};
+  std::copy(message.begin() + static_cast<std::ptrdiff_t>(offset), message.end(), block.begin());
+  block[remainder] = 0x80U;
+  const auto bit_length = static_cast<std::uint64_t>(message.size()) * 8U;
+  for (unsigned i = 0; i < 8; ++i) {
+    block[block.size() - 1U - i] = static_cast<std::uint8_t>(bit_length >> (i * 8U));
+  }
+  return block;
+}
+
+nlohmann::json research_addition_json(
+    const std::vector<std::pair<std::string, std::uint32_t>>& operands,
+    const std::uint32_t expected,
+    const std::string& context) {
+  require_research(!operands.empty(), context + ": addition has no operands");
+  std::uint64_t carry = 0;
+  std::uint32_t reconstructed = 0;
+  std::uint32_t nonzero_mask = 0;
+  unsigned nonzero_count = 0;
+  unsigned longest_run = 0;
+  unsigned current_run = 0;
+  std::uint64_t max_carry = 0;
+  for (unsigned bit = 0; bit < 32; ++bit) {
+    std::uint64_t column_total = carry;
+    for (const auto& operand : operands) column_total += (operand.second >> bit) & 1U;
+    if ((column_total & 1U) != 0) reconstructed |= std::uint32_t{1} << bit;
+    carry = column_total >> 1U;
+    max_carry = std::max(max_carry, carry);
+    if (carry != 0) {
+      nonzero_mask |= std::uint32_t{1} << bit;
+      ++nonzero_count;
+      longest_run = std::max(longest_run, ++current_run);
+    } else {
+      current_run = 0;
+    }
+  }
+  require_research(reconstructed == expected,
+                   context + ": reconstructed modular sum differs from expected result");
+
+  auto operand_json = nlohmann::json::array();
+  for (const auto& operand : operands) {
+    operand_json.push_back({{"name", operand.first}, {"value", sha256_word_hex(operand.second)}});
+  }
+  return {
+      {"operands", std::move(operand_json)},
+      {"carry_summary", {
+          {"model", "order_independent_bit_column_sum"},
+          {"nonzero_carry_mask_hex", sha256_word_hex(nonzero_mask)},
+          {"nonzero_carry_count", nonzero_count},
+          {"longest_nonzero_carry_run", longest_run},
+          {"max_carry_value", max_carry},
+          {"final_carry_value", carry}}},
+      {"result", sha256_word_hex(expected)}};
+}
+
+nlohmann::json research_schedule_json(
+    const ResearchBlock& block,
+    const std::span<const crypto::Sha256RoundTrace> rounds,
+    const std::string& context) {
+  require_research(rounds.size() == 64U, context + ": message schedule requires exactly 64 traced rounds");
+  std::array<std::uint32_t, 64> schedule{};
+  auto entries = nlohmann::json::array();
+  for (std::size_t t = 0; t < 16; ++t) {
+    schedule[t] = read_research_be32(block.data() + t * 4U);
+    require_research(schedule[t] == rounds[t].w,
+                     context + ": direct message word W" + std::to_string(t) + " differs from trace.w");
+    entries.push_back({
+        {"t", t}, {"round", t + 1U}, {"source", "message_block"},
+        {"w", sha256_word_hex(schedule[t])}});
+  }
+  for (std::size_t t = 16; t < schedule.size(); ++t) {
+    const auto w_t_minus_2 = schedule[t - 2U];
+    const auto w_t_minus_7 = schedule[t - 7U];
+    const auto w_t_minus_15 = schedule[t - 15U];
+    const auto w_t_minus_16 = schedule[t - 16U];
+    const auto rotr17 = std::rotr(w_t_minus_2, 17);
+    const auto rotr19 = std::rotr(w_t_minus_2, 19);
+    const auto shr10 = w_t_minus_2 >> 10U;
+    const auto small_sigma1 = rotr17 ^ rotr19 ^ shr10;
+    const auto rotr7 = std::rotr(w_t_minus_15, 7);
+    const auto rotr18 = std::rotr(w_t_minus_15, 18);
+    const auto shr3 = w_t_minus_15 >> 3U;
+    const auto small_sigma0 = rotr7 ^ rotr18 ^ shr3;
+    schedule[t] = small_sigma1 + w_t_minus_7 + small_sigma0 + w_t_minus_16;
+    require_research(schedule[t] == rounds[t].w,
+                     context + ": reconstructed extended word W" + std::to_string(t) + " differs from trace.w");
+    entries.push_back({
+        {"t", t}, {"round", t + 1U}, {"source", "extended_schedule"},
+        {"w_t_minus_2", sha256_word_hex(w_t_minus_2)},
+        {"w_t_minus_7", sha256_word_hex(w_t_minus_7)},
+        {"w_t_minus_15", sha256_word_hex(w_t_minus_15)},
+        {"w_t_minus_16", sha256_word_hex(w_t_minus_16)},
+        {"rotr17_w_t_minus_2", sha256_word_hex(rotr17)},
+        {"rotr19_w_t_minus_2", sha256_word_hex(rotr19)},
+        {"shr10_w_t_minus_2", sha256_word_hex(shr10)},
+        {"small_sigma1", sha256_word_hex(small_sigma1)},
+        {"rotr7_w_t_minus_15", sha256_word_hex(rotr7)},
+        {"rotr18_w_t_minus_15", sha256_word_hex(rotr18)},
+        {"shr3_w_t_minus_15", sha256_word_hex(shr3)},
+        {"small_sigma0", sha256_word_hex(small_sigma0)},
+        {"result_w", sha256_word_hex(schedule[t])}});
+  }
+  return {
+      {"block_hex", crypto::to_hex(block)},
+      {"word_count", entries.size()},
+      {"extended_schedule_validated", true},
+      {"words", std::move(entries)}};
+}
+
+nlohmann::json research_round_json(
+    const crypto::Sha256RoundTrace& trace,
+    const unsigned sha,
+    std::array<std::uint32_t, 64>& derived_constants,
+    const bool establish_constants,
+    const std::string& context) {
+  const auto rotr2_a = std::rotr(trace.a_before, 2);
+  const auto rotr13_a = std::rotr(trace.a_before, 13);
+  const auto rotr22_a = std::rotr(trace.a_before, 22);
+  const auto reconstructed_sum0 = rotr2_a ^ rotr13_a ^ rotr22_a;
+  const auto rotr6_e = std::rotr(trace.e_before, 6);
+  const auto rotr11_e = std::rotr(trace.e_before, 11);
+  const auto rotr25_e = std::rotr(trace.e_before, 25);
+  const auto reconstructed_sum1 = rotr6_e ^ rotr11_e ^ rotr25_e;
+  const auto reconstructed_choice =
+      (trace.e_before & trace.f_before) ^ (~trace.e_before & trace.g_before);
+  const auto reconstructed_majority =
+      (trace.a_before & trace.b_before) ^ (trace.a_before & trace.c_before) ^
+      (trace.b_before & trace.c_before);
+  require_research(reconstructed_sum0 == trace.sum0, context + ": Sigma0 mismatch");
+  require_research(reconstructed_sum1 == trace.sum1, context + ": Sigma1 mismatch");
+  require_research(reconstructed_choice == trace.choice, context + ": choice mismatch");
+  require_research(reconstructed_majority == trace.majority, context + ": majority mismatch");
+
+  const auto derived_k = trace.temp1 - trace.h_before - trace.sum1 - trace.choice - trace.w;
+  if (establish_constants) {
+    derived_constants[trace.round_index] = derived_k;
+  } else {
+    require_research(derived_constants[trace.round_index] == derived_k,
+                     context + ": derived K differs from the value established by the first compression");
+  }
+
+  const auto temp1 = research_addition_json(
+      {{"h", trace.h_before}, {"sum1", trace.sum1}, {"choice", trace.choice},
+       {"derived_k", derived_k}, {"w", trace.w}},
+      trace.temp1, context + ": T1");
+  const auto temp2 = research_addition_json(
+      {{"sum0", trace.sum0}, {"majority", trace.majority}},
+      trace.temp2, context + ": T2");
+  const auto new_a = research_addition_json(
+      {{"temp1", trace.temp1}, {"temp2", trace.temp2}},
+      trace.a_after, context + ": new_a");
+  const auto new_e = research_addition_json(
+      {{"d", trace.d_before}, {"temp1", trace.temp1}},
+      trace.e_after, context + ": new_e");
+
+  require_research(trace.b_after == trace.a_before, context + ": new_b transfer mismatch");
+  require_research(trace.c_after == trace.b_before, context + ": new_c transfer mismatch");
+  require_research(trace.d_after == trace.c_before, context + ": new_d transfer mismatch");
+  require_research(trace.f_after == trace.e_before, context + ": new_f transfer mismatch");
+  require_research(trace.g_after == trace.f_before, context + ": new_g transfer mismatch");
+  require_research(trace.h_after == trace.g_before, context + ": new_h transfer mismatch");
+
+  const auto before = research_before_state(trace);
+  const auto after = research_after_state(trace);
+  auto register_hamming = nlohmann::json::object();
+  unsigned total_hamming = 0;
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    const auto distance = research_word_hamming(before[i], after[i]);
+    register_hamming[kResearchRegisters[i]] = distance;
+    total_hamming += distance;
+  }
+
+  return {
+      {"identity", {
+          {"sha", sha}, {"compression", trace.compression_index},
+          {"round", trace.round_index + 1U}}},
+      {"message", {{"w", sha256_word_hex(trace.w)}}},
+      {"before", research_state_json(before)},
+      {"large_sigma0", {
+          {"rotr2_a", sha256_word_hex(rotr2_a)},
+          {"rotr13_a", sha256_word_hex(rotr13_a)},
+          {"rotr22_a", sha256_word_hex(rotr22_a)},
+          {"sum0", sha256_word_hex(trace.sum0)}}},
+      {"large_sigma1", {
+          {"rotr6_e", sha256_word_hex(rotr6_e)},
+          {"rotr11_e", sha256_word_hex(rotr11_e)},
+          {"rotr25_e", sha256_word_hex(rotr25_e)},
+          {"sum1", sha256_word_hex(trace.sum1)}}},
+      {"functions", {
+          {"choice", sha256_word_hex(trace.choice)},
+          {"majority", sha256_word_hex(trace.majority)}}},
+      {"derived_k", sha256_word_hex(derived_k)},
+      {"temp1", temp1},
+      {"temp2", temp2},
+      {"state_construction", {
+          {"new_a", new_a},
+          {"new_e", new_e},
+          {"transfers", {
+              {"new_b_from_old_a", sha256_word_hex(trace.b_after)},
+              {"new_c_from_old_b", sha256_word_hex(trace.c_after)},
+              {"new_d_from_old_c", sha256_word_hex(trace.d_after)},
+              {"new_f_from_old_e", sha256_word_hex(trace.f_after)},
+              {"new_g_from_old_f", sha256_word_hex(trace.g_after)},
+              {"new_h_from_old_g", sha256_word_hex(trace.h_after)}}}}},
+      {"after", research_state_json(after)},
+      {"before_to_after_hamming", {
+          {"description", "descriptive BEFORE-to-AFTER register distance; six registers are algorithmic transfers"},
+          {"registers", std::move(register_hamming)},
+          {"total", total_hamming}}},
+      {"validation", {
+          {"primitives", true}, {"temp1", true}, {"temp2", true},
+          {"new_a", true}, {"new_e", true}, {"register_transfers", true}}}};
+}
+
+nlohmann::json research_compression_json(
+    const unsigned sha,
+    const unsigned compression,
+    const ResearchBlock& block,
+    const std::span<const crypto::Sha256RoundTrace> rounds,
+    const ResearchState& expected_output,
+    std::array<std::uint32_t, 64>& derived_constants,
+    const bool establish_constants) {
+  const auto context = "SHA" + std::to_string(sha) + "/compression" + std::to_string(compression);
+  require_research(rounds.size() == 64U, context + ": expected exactly 64 rounds");
+  for (std::size_t i = 0; i < rounds.size(); ++i) {
+    require_research(rounds[i].compression_index == compression,
+                     context + ": trace compression index mismatch at round " + std::to_string(i + 1U));
+    require_research(rounds[i].round_index == i,
+                     context + ": trace round index mismatch at round " + std::to_string(i + 1U));
+  }
+  for (std::size_t i = 0; i + 1U < rounds.size(); ++i) {
+    require_research(research_after_state(rounds[i]) == research_before_state(rounds[i + 1U]),
+                     context + ": AFTER(round " + std::to_string(i + 1U) +
+                         ") differs from BEFORE(round " + std::to_string(i + 2U) + ")");
+  }
+
+  const auto input_state = research_before_state(rounds.front());
+  const auto final_working_state = research_after_state(rounds.back());
+  auto round_json = nlohmann::json::array();
+  for (std::size_t i = 0; i < rounds.size(); ++i) {
+    round_json.push_back(research_round_json(
+        rounds[i], sha, derived_constants, establish_constants,
+        context + "/round" + std::to_string(i + 1U)));
+  }
+
+  auto feed_forward = nlohmann::json::array();
+  for (std::size_t i = 0; i < input_state.size(); ++i) {
+    const auto word_context = context + "/feed_forward/word" + std::to_string(i);
+    auto addition = research_addition_json(
+        {{"input_chaining_word", input_state[i]},
+         {"final_working_word", final_working_state[i]}},
+        expected_output[i], word_context);
+    addition["word_index"] = i;
+    addition["register"] = kResearchRegisters[i];
+    addition["input_chaining_word"] = sha256_word_hex(input_state[i]);
+    addition["final_working_word"] = sha256_word_hex(final_working_state[i]);
+    addition["output_chaining_word"] = sha256_word_hex(expected_output[i]);
+    feed_forward.push_back(std::move(addition));
+  }
+
+  return {
+      {"sha", sha},
+      {"compression", compression},
+      {"input_state", research_state_json(input_state)},
+      {"message_schedule", research_schedule_json(block, rounds, context)},
+      {"rounds", std::move(round_json)},
+      {"final_working_state", research_state_json(final_working_state)},
+      {"feed_forward", std::move(feed_forward)},
+      {"output_state", research_state_json(expected_output)},
+      {"validation", {
+          {"round_count", 64}, {"message_schedule", true},
+          {"intra_compression_transitions", true}, {"feed_forward", true}}}};
+}
+
+std::vector<ResearchNonceSelection> research_nonce_selections(
+    const std::uint32_t reference_nonce,
+    const config::ResearchTraceAnalysisConfig& analysis) {
+  std::map<std::uint32_t, nlohmann::json> selected;
+  const auto add = [&](const std::uint32_t nonce, nlohmann::json label) {
+    if (nonce == reference_nonce) return;
+    auto [item, inserted] = selected.try_emplace(nonce, nlohmann::json::array());
+    (void)inserted;
+    item->second.push_back(std::move(label));
+  };
+
+  if (analysis.single_bit_flips) {
+    for (unsigned bit = 0; bit < 32; ++bit) {
+      add(reference_nonce ^ (std::uint32_t{1} << bit),
+          {{"kind", "single_bit_flip"}, {"bit", bit}});
+    }
+  }
+  for (std::uint64_t delta = 1; delta <= analysis.neighbor_radius; ++delta) {
+    const auto reference_wide = static_cast<std::uint64_t>(reference_nonce);
+    if (delta <= reference_wide) {
+      add(static_cast<std::uint32_t>(reference_wide - delta),
+          {{"kind", "neighbor"}, {"delta", -static_cast<std::int64_t>(delta)}});
+    }
+    if (reference_wide + delta <= std::numeric_limits<std::uint32_t>::max()) {
+      add(static_cast<std::uint32_t>(reference_wide + delta),
+          {{"kind", "neighbor"}, {"delta", static_cast<std::int64_t>(delta)}});
+    }
+  }
+  for (const auto nonce : analysis.control_nonces) add(nonce, {{"kind", "control"}});
+
+  std::vector<ResearchNonceSelection> result;
+  result.reserve(selected.size());
+  for (auto& [nonce, labels] : selected) {
+    result.push_back({nonce, std::move(labels)});
+  }
+  return result;
+}
+
+ResearchTraceRecord research_trace_record(
+    const bitcoin::Header& base_header,
+    const std::uint32_t nonce,
+    nlohmann::json labels) {
+  auto header = base_header;
+  bitcoin::set_nonce(header, nonce);
+  auto trace = crypto::trace_reduced_sha256d(header, 64);
+  require_research(trace.first_sha.rounds.size() == 128U,
+                   "nonce " + std::to_string(nonce) + ": first SHA must contain 128 rounds");
+  require_research(trace.second_sha.rounds.size() == 64U,
+                   "nonce " + std::to_string(nonce) + ": second SHA must contain 64 rounds");
+  return {nonce, std::move(labels), header, std::move(trace), nlohmann::json()};
+}
+
+void research_annotate_w3_labels(ResearchTraceRecord& record, const std::uint32_t reference_w3) {
+  const auto w3 = record.trace.first_sha.rounds.at(64U + 3U).w;
+  const auto difference = reference_w3 ^ w3;
+  for (auto& label : record.labels) {
+    if (label.value("kind", "") != "single_bit_flip") continue;
+    const auto distance = research_word_hamming(reference_w3, w3);
+    require_research(distance == 1U,
+                     "nonce " + std::to_string(record.nonce) +
+                         ": single-bit nonce flip did not produce exactly one changed bit in W3");
+    label["w3_changed_bit"] = std::countr_zero(difference);
+    label["w3_hamming"] = distance;
+  }
+}
+
+nlohmann::json research_trajectory_json(
+    const ResearchTraceRecord& record,
+    const std::uint32_t reference_w3) {
+  const auto& first_rounds = record.trace.first_sha.rounds;
+  const auto& second_rounds = record.trace.second_sha.rounds;
+  const std::span<const crypto::Sha256RoundTrace> first_compression(
+      first_rounds.data(), 64U);
+  const std::span<const crypto::Sha256RoundTrace> first_final_compression(
+      first_rounds.data() + 64U, 64U);
+  const std::span<const crypto::Sha256RoundTrace> second_compression(
+      second_rounds.data(), 64U);
+
+  ResearchBlock first_block{};
+  std::copy_n(record.header.begin(), first_block.size(), first_block.begin());
+  const auto first_tail = research_final_block(record.header, 64U);
+  const auto second_block = research_final_block(record.trace.first_sha.digest, 0U);
+  const auto first_compression_output = research_before_state(first_rounds.at(64U));
+  const auto first_digest_words = research_digest_words(record.trace.first_sha.digest);
+  const auto second_digest_words = research_digest_words(record.trace.second_sha.digest);
+
+  std::array<std::uint32_t, 64> derived_constants{};
+  auto first_compressions = nlohmann::json::array();
+  first_compressions.push_back(research_compression_json(
+      1U, 0U, first_block, first_compression, first_compression_output,
+      derived_constants, true));
+  first_compressions.push_back(research_compression_json(
+      1U, 1U, first_tail, first_final_compression, first_digest_words,
+      derived_constants, false));
+  auto second_compressions = nlohmann::json::array();
+  second_compressions.push_back(research_compression_json(
+      2U, 0U, second_block, second_compression, second_digest_words,
+      derived_constants, false));
+
+  auto linked_words = nlohmann::json::array();
+  for (std::size_t i = 0; i < first_digest_words.size(); ++i) {
+    require_research(second_rounds[i].w == first_digest_words[i],
+                     "nonce " + std::to_string(record.nonce) +
+                         ": first SHA digest does not match second SHA message word W" + std::to_string(i));
+    linked_words.push_back({
+        {"t", i},
+        {"first_sha_digest_word", sha256_word_hex(first_digest_words[i])},
+        {"second_sha_message_word", sha256_word_hex(second_rounds[i].w)},
+        {"match", true}});
+  }
+
+  auto header_bytes = nlohmann::json::array();
+  for (std::size_t i = 76; i < 80; ++i) header_bytes.push_back(record.header[i]);
+  const auto w3 = first_rounds.at(64U + 3U).w;
+  auto w3_changes = nlohmann::json::array();
+  for (const auto& label : record.labels) {
+    if (label.value("kind", "") == "single_bit_flip") {
+      w3_changes.push_back({
+          {"nonce_bit", label.at("bit")},
+          {"w3_changed_bit", label.at("w3_changed_bit")},
+          {"w3_hamming", label.at("w3_hamming")}});
+    }
+  }
+  const auto final_hash = crypto::bitcoin_hash_hex(record.trace.digest);
+
+  return {
+      {"nonce", record.nonce},
+      {"labels", record.labels},
+      {"header_hex", bitcoin::header_hex(record.header)},
+      {"nonce_hex", sha256_word_hex(record.nonce)},
+      {"nonce_header_bytes", std::move(header_bytes)},
+      {"nonce_header_bytes_hex", hex_nonce_bytes(record.header)},
+      {"sha1_compression1_w3", sha256_word_hex(w3)},
+      {"sha1_compression1_w3_reference", sha256_word_hex(reference_w3)},
+      {"single_bit_w3_changes", std::move(w3_changes)},
+      {"final_hash", final_hash},
+      {"first_sha", {
+          {"digest", crypto::digest_hex(record.trace.first_sha.digest)},
+          {"digest_format", "sha256_digest_hex"},
+          {"compressions", std::move(first_compressions)}}},
+      {"first_sha_to_second_sha", {
+          {"first_sha_digest", crypto::digest_hex(record.trace.first_sha.digest)},
+          {"second_sha_message_prefix_bytes", crypto::to_hex(record.trace.first_sha.digest)},
+          {"second_sha_message_block_hex", crypto::to_hex(second_block)},
+          {"word_links", std::move(linked_words)},
+          {"exact_match", true}}},
+      {"second_sha", {
+          {"digest", crypto::digest_hex(record.trace.second_sha.digest)},
+          {"digest_format", "sha256_digest_hex"},
+          {"compressions", std::move(second_compressions)}}},
+      {"final", {
+          {"first_sha_digest_raw", crypto::digest_hex(record.trace.first_sha.digest)},
+          {"second_sha_digest_raw", crypto::digest_hex(record.trace.second_sha.digest)},
+          {"bitcoin_display_hash", final_hash}}},
+      {"validation", {
+          {"total_rounds", 192}, {"compression_count", 3},
+          {"message_schedules", true}, {"round_arithmetic", true},
+          {"register_transfers", true}, {"intra_compression_transitions", true},
+          {"feed_forward", true}, {"first_sha_to_second_sha", true}}}};
+}
+
+nlohmann::json research_state_diff_json(
+    const ResearchState& reference,
+    const ResearchState& candidate,
+    const bool include_ratio) {
+  auto result = nlohmann::json::object();
+  unsigned total = 0;
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    const auto distance = research_word_hamming(reference[i], candidate[i]);
+    result[kResearchRegisters[i]] = distance;
+    total += distance;
+  }
+  result["total_hamming"] = total;
+  if (include_ratio) result["diffusion_ratio"] = static_cast<double>(total) / 256.0;
+  return result;
+}
+
+nlohmann::json research_round_position(const unsigned sha,
+                                       const unsigned compression,
+                                       const unsigned round) {
+  return {{"sha", sha}, {"compression", compression}, {"round", round}};
+}
+
+nlohmann::json research_diffusion_json(
+    const ResearchTraceRecord& reference,
+    const ResearchTraceRecord& candidate) {
+  require_research(candidate.trace.first_sha.rounds.size() == reference.trace.first_sha.rounds.size() &&
+                       candidate.trace.second_sha.rounds.size() == reference.trace.second_sha.rounds.size(),
+                   "nonce " + std::to_string(candidate.nonce) + ": candidate/reference trace sizes differ");
+  for (std::size_t i = 0; i < 64U; ++i) {
+    require_research(research_round_equal(reference.trace.first_sha.rounds[i],
+                                          candidate.trace.first_sha.rounds[i]),
+                     "nonce " + std::to_string(candidate.nonce) +
+                         ": SHA1/compression0 differs at round " + std::to_string(i + 1U));
+  }
+  for (std::size_t i = 64U; i < 67U; ++i) {
+    require_research(research_round_equal(reference.trace.first_sha.rounds[i],
+                                          candidate.trace.first_sha.rounds[i]),
+                     "nonce " + std::to_string(candidate.nonce) +
+                         ": SHA1/compression1 round " + std::to_string(i - 63U) + " must be identical");
+  }
+
+  auto first_w_difference = nlohmann::json(nullptr);
+  auto first_temp1_difference = nlohmann::json(nullptr);
+  auto first_after_state_difference = nlohmann::json(nullptr);
+  auto first_before_state_difference = nlohmann::json(nullptr);
+  auto first_non_w_primitive_difference = nlohmann::json(nullptr);
+  auto round_differences = nlohmann::json::array();
+
+  const auto compare_round = [&](const crypto::Sha256RoundTrace& reference_round,
+                                 const crypto::Sha256RoundTrace& candidate_round,
+                                 const unsigned sha) {
+    const auto compression = reference_round.compression_index;
+    const auto human_round = reference_round.round_index + 1U;
+    const auto position = research_round_position(sha, compression, human_round);
+    const auto reference_before = research_before_state(reference_round);
+    const auto candidate_before = research_before_state(candidate_round);
+    const auto reference_after = research_after_state(reference_round);
+    const auto candidate_after = research_after_state(candidate_round);
+    const auto before_total = research_state_hamming(reference_before, candidate_before);
+    const auto after_total = research_state_hamming(reference_after, candidate_after);
+    if (first_w_difference.is_null() && reference_round.w != candidate_round.w) first_w_difference = position;
+    if (first_temp1_difference.is_null() && reference_round.temp1 != candidate_round.temp1) {
+      first_temp1_difference = position;
+    }
+    if (first_after_state_difference.is_null() && after_total != 0U) first_after_state_difference = position;
+    if (first_before_state_difference.is_null() && before_total != 0U) first_before_state_difference = position;
+    if (first_non_w_primitive_difference.is_null() &&
+        (reference_round.sum0 != candidate_round.sum0 || reference_round.sum1 != candidate_round.sum1 ||
+         reference_round.choice != candidate_round.choice ||
+         reference_round.majority != candidate_round.majority ||
+         reference_round.temp2 != candidate_round.temp2)) {
+      first_non_w_primitive_difference = position;
+    }
+
+    round_differences.push_back({
+        {"sha", sha}, {"compression", compression}, {"round", human_round},
+        {"w_hamming", research_word_hamming(reference_round.w, candidate_round.w)},
+        {"rotr2_a_hamming", research_word_hamming(
+            std::rotr(reference_round.a_before, 2), std::rotr(candidate_round.a_before, 2))},
+        {"rotr13_a_hamming", research_word_hamming(
+            std::rotr(reference_round.a_before, 13), std::rotr(candidate_round.a_before, 13))},
+        {"rotr22_a_hamming", research_word_hamming(
+            std::rotr(reference_round.a_before, 22), std::rotr(candidate_round.a_before, 22))},
+        {"sum0_hamming", research_word_hamming(reference_round.sum0, candidate_round.sum0)},
+        {"rotr6_e_hamming", research_word_hamming(
+            std::rotr(reference_round.e_before, 6), std::rotr(candidate_round.e_before, 6))},
+        {"rotr11_e_hamming", research_word_hamming(
+            std::rotr(reference_round.e_before, 11), std::rotr(candidate_round.e_before, 11))},
+        {"rotr25_e_hamming", research_word_hamming(
+            std::rotr(reference_round.e_before, 25), std::rotr(candidate_round.e_before, 25))},
+        {"sum1_hamming", research_word_hamming(reference_round.sum1, candidate_round.sum1)},
+        {"choice_hamming", research_word_hamming(reference_round.choice, candidate_round.choice)},
+        {"majority_hamming", research_word_hamming(reference_round.majority, candidate_round.majority)},
+        {"temp1_hamming", research_word_hamming(reference_round.temp1, candidate_round.temp1)},
+        {"temp2_hamming", research_word_hamming(reference_round.temp2, candidate_round.temp2)},
+        {"before", research_state_diff_json(reference_before, candidate_before, false)},
+        {"after", research_state_diff_json(reference_after, candidate_after, true)}});
+  };
+
+  for (std::size_t i = 0; i < reference.trace.first_sha.rounds.size(); ++i) {
+    compare_round(reference.trace.first_sha.rounds[i], candidate.trace.first_sha.rounds[i], 1U);
+  }
+  for (std::size_t i = 0; i < reference.trace.second_sha.rounds.size(); ++i) {
+    compare_round(reference.trace.second_sha.rounds[i], candidate.trace.second_sha.rounds[i], 2U);
+  }
+
+  const auto expected_first_w = research_round_position(1U, 1U, 4U);
+  require_research(first_w_difference == expected_first_w,
+                   "nonce " + std::to_string(candidate.nonce) +
+                       ": first W difference must be SHA1/compression1/round4");
+  return {
+      {"nonce", candidate.nonce},
+      {"labels", candidate.labels},
+      {"final_hash", crypto::bitcoin_hash_hex(candidate.trace.digest)},
+      {"final_digest_hamming", crypto::hamming_distance(reference.trace.digest, candidate.trace.digest)},
+      {"first_w_difference", std::move(first_w_difference)},
+      {"first_temp1_difference", std::move(first_temp1_difference)},
+      {"first_after_state_difference", std::move(first_after_state_difference)},
+      {"first_before_state_difference", std::move(first_before_state_difference)},
+      {"first_non_w_primitive_difference", std::move(first_non_w_primitive_difference)},
+      {"rounds", std::move(round_differences)},
+      {"validation", {
+          {"round_count", 192}, {"sha1_compression0_identical", true},
+          {"sha1_compression1_rounds_1_to_3_identical", true},
+          {"first_w_difference_is_round_4", true}}}};
+}
+
+struct ResearchAnalysisReports {
+  nlohmann::json trajectories;
+  nlohmann::json diffusion;
+  std::size_t candidate_count;
+  std::size_t trajectory_count;
+};
+
+ResearchAnalysisReports research_analysis_reports(
+    const bitcoin::Header& reference_header,
+    const crypto::ReducedSha256dTrace& reference_trace,
+    const std::string& header_id,
+    const std::uint32_t reference_nonce,
+    const config::ResearchTraceAnalysisConfig& analysis) {
+  constexpr auto genesis_hash =
+      "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+  require_research(crypto::bitcoin_hash_hex(reference_trace.digest) == genesis_hash,
+                   "reference nonce does not produce the exact Bitcoin Genesis hash");
+  require_research(reference_trace.first_sha.rounds.size() == 128U &&
+                       reference_trace.second_sha.rounds.size() == 64U,
+                   "reference trace must contain exactly 192 rounds in three compressions");
+
+  ResearchTraceRecord reference{
+      reference_nonce,
+      nlohmann::json::array({{{"kind", "reference"}}}),
+      reference_header,
+      reference_trace,
+      nlohmann::json()};
+  const auto reference_w3 = reference.trace.first_sha.rounds.at(64U + 3U).w;
+  reference.trajectory = research_trajectory_json(reference, reference_w3);
+
+  const auto selections = research_nonce_selections(reference_nonce, analysis);
+  std::vector<ResearchTraceRecord> candidates;
+  candidates.reserve(selections.size());
+  std::optional<std::uint32_t> previous_nonce;
+  bool multiple_labels_preserved = false;
+  for (const auto& selection : selections) {
+    require_research(selection.nonce != reference_nonce,
+                     "reference nonce was incorrectly retained as a candidate");
+    if (previous_nonce) {
+      require_research(*previous_nonce < selection.nonce,
+                       "candidate nonce set is not strictly unique");
+    }
+    previous_nonce = selection.nonce;
+    multiple_labels_preserved = multiple_labels_preserved || selection.labels.size() > 1U;
+    auto record = research_trace_record(reference_header, selection.nonce, selection.labels);
+    research_annotate_w3_labels(record, reference_w3);
+    record.trajectory = research_trajectory_json(record, reference_w3);
+    candidates.push_back(std::move(record));
+  }
+
+  auto comparisons = nlohmann::json::array();
+  for (const auto& candidate : candidates) {
+    comparisons.push_back(research_diffusion_json(reference, candidate));
+  }
+
+  const auto metadata = nlohmann::json{
+      {"carry_model", "order_independent_bit_column_sum"},
+      {"word_value_format", "lowercase_8_digit_hex_without_prefix"},
+      {"round_numbering", "human_1_to_64"},
+      {"rounds_per_compression", 64},
+      {"compressions_per_sha", {{"first_sha", 2}, {"second_sha", 1}}},
+      {"full_trajectories_saved", analysis.save_full_trajectories},
+      {"single_bit_flips", analysis.single_bit_flips},
+      {"neighbor_radius", analysis.neighbor_radius},
+      {"control_nonce_count", analysis.control_nonces.size()}};
+  const auto validation = nlohmann::json{
+      {"candidate_nonces_unique", true},
+      {"reference_excluded_from_candidates", true},
+      {"multiple_labels_preserved", multiple_labels_preserved},
+      {"rounds_per_trajectory", 192},
+      {"compressions_per_trajectory", 3},
+      {"message_schedule_words_per_compression", 64},
+      {"extended_schedules", true},
+      {"round_arithmetic", true},
+      {"register_transfers", true},
+      {"intra_compression_transitions", true},
+      {"feed_forward", true},
+      {"first_sha_to_second_sha", true},
+      {"sha1_compression0_identical", true},
+      {"sha1_compression1_rounds_1_to_3_identical", true},
+      {"first_w_difference_is_sha1_compression1_round4", true},
+      {"single_bit_flip_w3_hamming_is_one", true},
+      {"reference_genesis_hash", true}};
+
+  nlohmann::json trajectories_report = nullptr;
+  if (analysis.save_full_trajectories) {
+    auto trajectories = nlohmann::json::array();
+    trajectories.push_back(std::move(reference.trajectory));
+    for (auto& candidate : candidates) trajectories.push_back(std::move(candidate.trajectory));
+    trajectories_report = {
+        {"schema_version", 1},
+        {"mode", "research_trace_analysis"},
+        {"axis", "intrinsic_causal_trajectory"},
+        {"header_id", header_id},
+        {"reference_nonce", reference_nonce},
+        {"candidate_count", candidates.size()},
+        {"trajectory_count", trajectories.size()},
+        {"carry_model", "order_independent_bit_column_sum"},
+        {"metadata", metadata},
+        {"validation", validation},
+        {"trajectories", std::move(trajectories)}};
+  }
+
+  nlohmann::json diffusion_report = {
+      {"schema_version", 1},
+      {"mode", "research_trace_analysis"},
+      {"axis", "nonce_diffusion_against_reference"},
+      {"header_id", header_id},
+      {"reference_nonce", reference_nonce},
+      {"reference_hash", crypto::bitcoin_hash_hex(reference.trace.digest)},
+      {"candidate_count", candidates.size()},
+      {"metadata", metadata},
+      {"validation", validation},
+      {"comparisons", std::move(comparisons)}};
+  return {std::move(trajectories_report), std::move(diffusion_report),
+          candidates.size(), candidates.size() + 1U};
 }
 
 std::string live_work_fingerprint(
@@ -453,6 +1220,10 @@ struct MiningController::Impl {
   }
 
   int run_research(std::atomic_bool& stop_requested) {
+    if (config.research.trace_analysis.enabled && !config.historical.known_nonce) {
+      throw std::runtime_error(
+          "research trace analysis requires historical.known_nonce as the reference nonce");
+    }
     const auto bytes = crypto::from_hex(config.historical.header_hex);
     bitcoin::Header header{};
     std::copy(bytes.begin(), bytes.end(), header.begin());
@@ -512,6 +1283,25 @@ struct MiningController::Impl {
 
         event("[RESEARCH] validation SHA256d round=64 OK: " + actual);
         event("[RESEARCH] trace détaillée nonce connu sauvegardée: 192 rounds");
+
+        if (config.research.trace_analysis.enabled) {
+          auto reports = research_analysis_reports(
+              validation, trace, header_id, *config.historical.known_nonce,
+              config.research.trace_analysis);
+          if (config.research.trace_analysis.save_full_trajectories) {
+            logger.save_json_atomic(
+                config.logging.directory / "research_nonce_trajectories.json",
+                reports.trajectories);
+            event("[RESEARCH] trajectoires causales sauvegardées: " +
+                  std::to_string(reports.trajectory_count) + " nonces");
+          }
+          logger.save_json_atomic(
+              config.logging.directory / "research_nonce_diffusion.json",
+              reports.diffusion);
+          event("[RESEARCH] diffusion nonce sauvegardée: " +
+                std::to_string(reports.candidate_count) + " candidats comparés à " +
+                std::to_string(*config.historical.known_nonce));
+        }
     }
 
     checkpoint::StateStore state_store(config.project_root / "state" / allocator_state_name(config.mode));

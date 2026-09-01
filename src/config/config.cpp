@@ -93,6 +93,14 @@ AppConfig load(const std::filesystem::path& path) {
     assign_if(item, "round_start", config.research.round_start);
     assign_if(item, "round_end", config.research.round_end);
     assign_if(item, "sample_count", config.research.sample_count);
+    if (item.contains("trace_analysis")) {
+      const auto& analysis = item.at("trace_analysis");
+      assign_if(analysis, "enabled", config.research.trace_analysis.enabled);
+      assign_if(analysis, "single_bit_flips", config.research.trace_analysis.single_bit_flips);
+      assign_if(analysis, "neighbor_radius", config.research.trace_analysis.neighbor_radius);
+      assign_if(analysis, "control_nonces", config.research.trace_analysis.control_nonces);
+      assign_if(analysis, "save_full_trajectories", config.research.trace_analysis.save_full_trajectories);
+    }
   }
   if (json.contains("benchmark")) {
     const auto& item = json.at("benchmark");

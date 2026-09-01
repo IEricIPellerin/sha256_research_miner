@@ -319,145 +319,716 @@ struct GpuMiner::Impl {
     }
   }
 
-  void run(std::stop_token token, LiveMiningJob job, bool auto_tune) {
+  void run(std::stop_token token, LiveMiningJob job, bool auto_tune)
+  {
     auto unit = allocator.acquire(WorkerKind::Gpu);
-    if (!unit) return;
-    try {
-      cl_int error = CL_SUCCESS;
-      cl_context context = clCreateContext(nullptr, 1, &device_id, nullptr, nullptr, &error); check(error, "clCreateContext");
-      // OpenCL 1.2 remains the compatibility baseline for the deployed AMD runtime.
-      cl_command_queue queue = clCreateCommandQueue(context, device_id, CL_QUEUE_PROFILING_ENABLE, &error); check(error, "clCreateCommandQueue");
-      const auto source = read_kernel();
-      const char* source_pointer = source.c_str();
-      const auto source_size = source.size();
-      cl_program program = clCreateProgramWithSource(context, 1, &source_pointer, &source_size, &error); check(error, "clCreateProgramWithSource");
-      error = clBuildProgram(program, 1, &device_id, "-cl-std=CL1.2", nullptr, nullptr);
-      if (error != CL_SUCCESS) {
-        std::size_t size = 0;
-        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, nullptr, &size);
-        std::string log(size, '\0');
-        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, size, log.data(), nullptr);
-        throw std::runtime_error("OpenCL kernel compilation failed: " + log);
+    if (!unit)
+    {
+      return;
+    }
+
+    cl_context context{};
+    cl_command_queue queue{};
+    cl_program program{};
+    cl_kernel kernel{};
+    cl_mem header_buffer{};
+    cl_mem target_buffer{};
+    cl_mem count_buffer{};
+    cl_mem candidates_buffer{};
+
+    std::string current_unit_id = unit->id;
+
+    const auto release_all = [&]
+    {
+      if (candidates_buffer)
+      {
+        clReleaseMemObject(candidates_buffer);
       }
-      cl_kernel kernel = clCreateKernel(program, "sha256d_scan", &error); check(error, "clCreateKernel");
 
-      auto built = stratum::build_work(job.job, job.extranonce1, unit->extranonce2, 0);
-      cl_mem header_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 76, built.header.data(), &error); check(error, "header buffer");
-      cl_mem target_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32, job.share_target.big_endian.data(), &error); check(error, "target buffer");
+      if (count_buffer)
+      {
+        clReleaseMemObject(count_buffer);
+      }
+
+      if (target_buffer)
+      {
+        clReleaseMemObject(target_buffer);
+      }
+
+      if (header_buffer)
+      {
+        clReleaseMemObject(header_buffer);
+      }
+
+      if (kernel)
+      {
+        clReleaseKernel(kernel);
+      }
+
+      if (program)
+      {
+        clReleaseProgram(program);
+      }
+
+      if (queue)
+      {
+        clReleaseCommandQueue(queue);
+      }
+
+      if (context)
+      {
+        clReleaseContext(context);
+      }
+    };
+
+    try
+    {
+      cl_int error = CL_SUCCESS;
+
+      context =
+          clCreateContext(
+              nullptr,
+              1,
+              &device_id,
+              nullptr,
+              nullptr,
+              &error);
+      check(error, "clCreateContext");
+
+      // OpenCL 1.2 remains the compatibility baseline
+      // for the deployed AMD runtime.
+      queue =
+          clCreateCommandQueue(
+              context,
+              device_id,
+              CL_QUEUE_PROFILING_ENABLE,
+              &error);
+      check(error, "clCreateCommandQueue");
+
+      const auto source = read_kernel();
+      const char *source_pointer = source.c_str();
+      const auto source_size = source.size();
+
+      program =
+          clCreateProgramWithSource(
+              context,
+              1,
+              &source_pointer,
+              &source_size,
+              &error);
+      check(error, "clCreateProgramWithSource");
+
+      error =
+          clBuildProgram(
+              program,
+              1,
+              &device_id,
+              "-cl-std=CL1.2",
+              nullptr,
+              nullptr);
+
+      if (error != CL_SUCCESS)
+      {
+        std::size_t size = 0;
+
+        clGetProgramBuildInfo(
+            program,
+            device_id,
+            CL_PROGRAM_BUILD_LOG,
+            0,
+            nullptr,
+            &size);
+
+        std::string log(size, '\0');
+
+        clGetProgramBuildInfo(
+            program,
+            device_id,
+            CL_PROGRAM_BUILD_LOG,
+            size,
+            log.data(),
+            nullptr);
+
+        throw std::runtime_error(
+            "OpenCL kernel compilation failed: " + log);
+      }
+
+      kernel =
+          clCreateKernel(
+              program,
+              "sha256d_scan",
+              &error);
+      check(error, "clCreateKernel");
+
+      auto built =
+          stratum::build_work(
+              job.job,
+              job.extranonce1,
+              unit->extranonce2,
+              0);
+
+      header_buffer =
+          clCreateBuffer(
+              context,
+              CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+              76,
+              built.header.data(),
+              &error);
+      check(error, "header buffer");
+
+      target_buffer =
+          clCreateBuffer(
+              context,
+              CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+              32,
+              job.share_target.big_endian.data(),
+              &error);
+      check(error, "target buffer");
+
       std::uint32_t zero = 0;
-      cl_mem count_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zero), &zero, &error); check(error, "candidate count buffer");
-      std::array<std::uint32_t, 64> candidate_nonces{};
-      cl_mem candidates_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(candidate_nonces), nullptr, &error); check(error, "candidate buffer");
-      check(clSetKernelArg(kernel, 0, sizeof(header_buffer), &header_buffer), "kernel header arg");
-      check(clSetKernelArg(kernel, 3, sizeof(target_buffer), &target_buffer), "kernel target arg");
-      check(clSetKernelArg(kernel, 4, sizeof(count_buffer), &count_buffer), "kernel count arg");
-      check(clSetKernelArg(kernel, 5, sizeof(candidates_buffer), &candidates_buffer), "kernel candidates arg");
 
-      std::size_t local_size = std::min<std::size_t>(256, info.max_workgroup_size);
+      count_buffer =
+          clCreateBuffer(
+              context,
+              CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+              sizeof(zero),
+              &zero,
+              &error);
+      check(error, "candidate count buffer");
+
+      std::array<std::uint32_t, 64> candidate_nonces{};
+
+      candidates_buffer =
+          clCreateBuffer(
+              context,
+              CL_MEM_WRITE_ONLY,
+              sizeof(candidate_nonces),
+              nullptr,
+              &error);
+      check(error, "candidate buffer");
+
+      check(
+          clSetKernelArg(
+              kernel,
+              0,
+              sizeof(header_buffer),
+              &header_buffer),
+          "kernel header arg");
+
+      check(
+          clSetKernelArg(
+              kernel,
+              3,
+              sizeof(target_buffer),
+              &target_buffer),
+          "kernel target arg");
+
+      check(
+          clSetKernelArg(
+              kernel,
+              4,
+              sizeof(count_buffer),
+              &count_buffer),
+          "kernel count arg");
+
+      check(
+          clSetKernelArg(
+              kernel,
+              5,
+              sizeof(candidates_buffer),
+              &candidates_buffer),
+          "kernel candidates arg");
+
+      std::size_t local_size =
+          std::min<std::size_t>(
+              256,
+              info.max_workgroup_size);
+
       std::size_t global_size = 1U << 20U;
       std::uint64_t batch_size = 1U << 24U;
+
       bool profile_matches = false;
-      const auto profile_document = checkpoint::StateStore(profile_path).load_or(nlohmann::json::object());
-      const auto profile = profile_document.contains("gpu") ? profile_document.at("gpu") : profile_document;
-      const auto profile_name = profile.value("device_name", profile.value("name", ""));
-      if (profile_name == info.name && profile.value("driver", "") == info.driver && profile.value("tuned", false)) {
-        local_size = profile.value("local_work_size", local_size);
-        global_size = profile.value("global_work_size", global_size);
-        batch_size = profile.value("batch_size", batch_size);
+
+      const auto profile_document =
+          checkpoint::StateStore(profile_path)
+              .load_or(nlohmann::json::object());
+
+      const auto profile =
+          profile_document.contains("gpu")
+              ? profile_document.at("gpu")
+              : profile_document;
+
+      const auto profile_name =
+          profile.value(
+              "device_name",
+              profile.value("name", ""));
+
+      if (profile_name == info.name &&
+          profile.value("driver", "") == info.driver &&
+          profile.value("tuned", false))
+      {
+        local_size =
+            profile.value(
+                "local_work_size",
+                local_size);
+
+        global_size =
+            profile.value(
+                "global_work_size",
+                global_size);
+
+        batch_size =
+            profile.value(
+                "batch_size",
+                batch_size);
+
         profile_matches = true;
       }
 
-      if (auto_tune && !profile_matches) {
+      if (auto_tune && !profile_matches)
+      {
         double best_rate = 0.0;
-        const std::array<std::size_t, 3> locals{64, 128, 256};
-        const std::array<std::size_t, 3> globals{1U << 16U, 1U << 18U, 1U << 20U};
-        const std::array<unsigned, 3> batch_repeats{1, 4, 16};
-        const std::array<std::uint8_t, 32> impossible_target{};
-        check(clEnqueueWriteBuffer(queue, target_buffer, CL_TRUE, 0, 32, impossible_target.data(), 0, nullptr, nullptr), "tune target write");
-        for (const auto local : locals) {
-          if (local > info.max_workgroup_size) continue;
-          for (const auto global : globals) {
-            for (const auto repeats : batch_repeats) {
-              std::uint32_t count = static_cast<std::uint32_t>(global);
-              check(clEnqueueWriteBuffer(queue, count_buffer, CL_TRUE, 0, sizeof(zero), &zero, 0, nullptr, nullptr), "tune reset");
-              check(clSetKernelArg(kernel, 2, sizeof(count), &count), "tune count arg");
-              const auto before = std::chrono::steady_clock::now();
+
+        const std::array<std::size_t, 3> locals{
+            64,
+            128,
+            256};
+
+        const std::array<std::size_t, 3> globals{
+            1U << 16U,
+            1U << 18U,
+            1U << 20U};
+
+        const std::array<unsigned, 3> batch_repeats{
+            1,
+            4,
+            16};
+
+        const std::array<std::uint8_t, 32>
+            impossible_target{};
+
+        check(
+            clEnqueueWriteBuffer(
+                queue,
+                target_buffer,
+                CL_TRUE,
+                0,
+                32,
+                impossible_target.data(),
+                0,
+                nullptr,
+                nullptr),
+            "tune target write");
+
+        for (const auto local : locals)
+        {
+          if (local > info.max_workgroup_size)
+          {
+            continue;
+          }
+
+          for (const auto global : globals)
+          {
+            for (const auto repeats : batch_repeats)
+            {
+              std::uint32_t count =
+                  static_cast<std::uint32_t>(
+                      global);
+
+              check(
+                  clEnqueueWriteBuffer(
+                      queue,
+                      count_buffer,
+                      CL_TRUE,
+                      0,
+                      sizeof(zero),
+                      &zero,
+                      0,
+                      nullptr,
+                      nullptr),
+                  "tune reset");
+
+              check(
+                  clSetKernelArg(
+                      kernel,
+                      2,
+                      sizeof(count),
+                      &count),
+                  "tune count arg");
+
+              const auto before =
+                  std::chrono::steady_clock::now();
+
               bool launch_ok = true;
-              for (unsigned repeat = 0; repeat < repeats; ++repeat) {
-                const auto start = static_cast<std::uint32_t>(static_cast<std::uint64_t>(repeat) * global);
-                check(clSetKernelArg(kernel, 1, sizeof(start), &start), "tune start arg");
-                if (clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global, &local, 0, nullptr, nullptr) != CL_SUCCESS) {
+
+              for (unsigned repeat = 0;
+                   repeat < repeats;
+                   ++repeat)
+              {
+                const auto start =
+                    static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(
+                            repeat) *
+                        global);
+
+                check(
+                    clSetKernelArg(
+                        kernel,
+                        1,
+                        sizeof(start),
+                        &start),
+                    "tune start arg");
+
+                if (clEnqueueNDRangeKernel(
+                        queue,
+                        kernel,
+                        1,
+                        nullptr,
+                        &global,
+                        &local,
+                        0,
+                        nullptr,
+                        nullptr) != CL_SUCCESS)
+                {
                   launch_ok = false;
                   break;
                 }
               }
-              if (!launch_ok) continue;
-              check(clFinish(queue), "tune finish");
-              const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
-              const auto tested = static_cast<double>(global) * repeats;
-              const auto rate = seconds > 0 ? tested / seconds : 0.0;
-              if (rate > best_rate) {
+
+              if (!launch_ok)
+              {
+                continue;
+              }
+
+              check(
+                  clFinish(queue),
+                  "tune finish");
+
+              const auto seconds =
+                  std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() -
+                      before)
+                      .count();
+
+              const auto tested =
+                  static_cast<double>(global) *
+                  repeats;
+
+              const auto rate =
+                  seconds > 0.0
+                      ? tested / seconds
+                      : 0.0;
+
+              if (rate > best_rate)
+              {
                 best_rate = rate;
                 local_size = local;
                 global_size = global;
-                batch_size = static_cast<std::uint64_t>(global) * repeats;
+
+                batch_size =
+                    static_cast<std::uint64_t>(
+                        global) *
+                    repeats;
               }
             }
           }
         }
-        check(clEnqueueWriteBuffer(queue, target_buffer, CL_TRUE, 0, 32, job.share_target.big_endian.data(), 0, nullptr, nullptr), "target restore");
+
+        check(
+            clEnqueueWriteBuffer(
+                queue,
+                target_buffer,
+                CL_TRUE,
+                0,
+                32,
+                job.share_target.big_endian.data(),
+                0,
+                nullptr,
+                nullptr),
+            "target restore");
+
         checkpoint::StateStore(profile_path).save({
-            {"schema_version", 1}, {"device_name", info.name}, {"vendor", info.vendor}, {"driver", info.driver},
-            {"local_work_size", local_size}, {"global_work_size", global_size}, {"batch_size", batch_size}, {"tuned", true}});
-        telemetry.event("[GPU] auto-tuning terminé: local=" + std::to_string(local_size) + " global=" + std::to_string(global_size));
+            {"schema_version", 1},
+            {"device_name", info.name},
+            {"vendor", info.vendor},
+            {"driver", info.driver},
+            {"local_work_size", local_size},
+            {"global_work_size", global_size},
+            {"batch_size", batch_size},
+            {"tuned", true},
+        });
+
+        telemetry.event(
+            "[GPU] auto-tuning terminé: local=" +
+            std::to_string(local_size) +
+            " global=" +
+            std::to_string(global_size));
       }
 
-      auto next = unit->nonce_next;
-      while (!token.stop_requested() && active_generation.load(std::memory_order_acquire) == job.generation && next < unit->nonce_end) {
-        const auto batch_count = std::min<std::uint64_t>(batch_size, unit->nonce_end - next);
-        std::uint64_t processed = 0;
-        while (processed < batch_count && !token.stop_requested() &&
-               active_generation.load(std::memory_order_relaxed) == job.generation) {
-          const auto count64 = std::min<std::uint64_t>(global_size, batch_count - processed);
-          const auto count = static_cast<std::uint32_t>(count64);
-          const auto start = static_cast<std::uint32_t>(next + processed);
-          const auto launch_global = ((static_cast<std::size_t>(count) + local_size - 1) / local_size) * local_size;
-          zero = 0;
-          check(clEnqueueWriteBuffer(queue, count_buffer, CL_TRUE, 0, sizeof(zero), &zero, 0, nullptr, nullptr), "candidate reset");
-          check(clSetKernelArg(kernel, 1, sizeof(start), &start), "start arg");
-          check(clSetKernelArg(kernel, 2, sizeof(count), &count), "count arg");
-          check(clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &launch_global, &local_size, 0, nullptr, nullptr), "kernel launch");
-          check(clFinish(queue), "kernel finish");
-          std::uint32_t candidate_count = 0;
-          check(clEnqueueReadBuffer(queue, count_buffer, CL_TRUE, 0, sizeof(candidate_count), &candidate_count, 0, nullptr, nullptr), "candidate count read");
-          if (candidate_count > 0) {
-            check(clEnqueueReadBuffer(queue, candidates_buffer, CL_TRUE, 0, sizeof(candidate_nonces), candidate_nonces.data(), 0, nullptr, nullptr), "candidate read");
-            const auto bounded_candidates = std::min(candidate_count, static_cast<std::uint32_t>(candidate_nonces.size()));
-            for (std::uint32_t i = 0; i < bounded_candidates; ++i) {
-              auto header = built.header;
-              bitcoin::set_nonce(header, candidate_nonces[i]);
-              const auto digest = crypto::sha256d(header);
-              if (!bitcoin::hash_meets_target(digest, job.share_target)) continue;
-              handler(Candidate{job, unit->extranonce2, header, built.merkle_root, digest, candidate_nonces[i],
-                                bitcoin::hash_meets_target(digest, job.network_target)});
+      while (!token.stop_requested() &&
+             active_generation.load(
+                 std::memory_order_acquire) ==
+                 job.generation)
+      {
+        current_unit_id = unit->id;
+
+        built =
+            stratum::build_work(
+                job.job,
+                job.extranonce1,
+                unit->extranonce2,
+                0);
+
+        check(
+            clEnqueueWriteBuffer(
+                queue,
+                header_buffer,
+                CL_TRUE,
+                0,
+                76,
+                built.header.data(),
+                0,
+                nullptr,
+                nullptr),
+            "header update");
+
+        auto next = unit->nonce_next;
+
+        while (!token.stop_requested() &&
+               active_generation.load(
+                   std::memory_order_acquire) ==
+                   job.generation &&
+               next < unit->nonce_end)
+        {
+          const auto batch_count =
+              std::min<std::uint64_t>(
+                  batch_size,
+                  unit->nonce_end - next);
+
+          std::uint64_t processed = 0;
+
+          while (processed < batch_count &&
+                 !token.stop_requested() &&
+                 active_generation.load(
+                     std::memory_order_relaxed) ==
+                     job.generation)
+          {
+            const auto count64 =
+                std::min<std::uint64_t>(
+                    global_size,
+                    batch_count - processed);
+
+            const auto count =
+                static_cast<std::uint32_t>(
+                    count64);
+
+            const auto start =
+                static_cast<std::uint32_t>(
+                    next + processed);
+
+            const auto launch_global =
+                ((static_cast<std::size_t>(count) +
+                  local_size - 1) /
+                 local_size) *
+                local_size;
+
+            zero = 0;
+
+            check(
+                clEnqueueWriteBuffer(
+                    queue,
+                    count_buffer,
+                    CL_TRUE,
+                    0,
+                    sizeof(zero),
+                    &zero,
+                    0,
+                    nullptr,
+                    nullptr),
+                "candidate reset");
+
+            check(
+                clSetKernelArg(
+                    kernel,
+                    1,
+                    sizeof(start),
+                    &start),
+                "start arg");
+
+            check(
+                clSetKernelArg(
+                    kernel,
+                    2,
+                    sizeof(count),
+                    &count),
+                "count arg");
+
+            check(
+                clEnqueueNDRangeKernel(
+                    queue,
+                    kernel,
+                    1,
+                    nullptr,
+                    &launch_global,
+                    &local_size,
+                    0,
+                    nullptr,
+                    nullptr),
+                "kernel launch");
+
+            check(
+                clFinish(queue),
+                "kernel finish");
+
+            std::uint32_t candidate_count = 0;
+
+            check(
+                clEnqueueReadBuffer(
+                    queue,
+                    count_buffer,
+                    CL_TRUE,
+                    0,
+                    sizeof(candidate_count),
+                    &candidate_count,
+                    0,
+                    nullptr,
+                    nullptr),
+                "candidate count read");
+
+            if (candidate_count > 0)
+            {
+              check(
+                  clEnqueueReadBuffer(
+                      queue,
+                      candidates_buffer,
+                      CL_TRUE,
+                      0,
+                      sizeof(candidate_nonces),
+                      candidate_nonces.data(),
+                      0,
+                      nullptr,
+                      nullptr),
+                  "candidate read");
+
+              const auto bounded_candidates =
+                  std::min(
+                      candidate_count,
+                      static_cast<std::uint32_t>(
+                          candidate_nonces.size()));
+
+              for (std::uint32_t i = 0;
+                   i < bounded_candidates;
+                   ++i)
+              {
+                auto header = built.header;
+
+                bitcoin::set_nonce(
+                    header,
+                    candidate_nonces[i]);
+
+                const auto digest =
+                    crypto::sha256d(header);
+
+                if (!bitcoin::hash_meets_target(
+                        digest,
+                        job.share_target))
+                {
+                  continue;
+                }
+
+                handler(
+                    Candidate{
+                        job,
+                        unit->extranonce2,
+                        header,
+                        built.merkle_root,
+                        digest,
+                        candidate_nonces[i],
+                        bitcoin::hash_meets_target(
+                            digest,
+                            job.network_target)});
+              }
             }
-          }
-          processed += count64;
-        }
-        next += processed;
-        allocator.update_progress(unit->id, next, processed);
-        telemetry.set_progress(unit->nonce_start, next, unit->nonce_end);
-        telemetry.gpu_hashes.fetch_add(processed, std::memory_order_relaxed);
-        if (processed == 0) break;
-      }
-      if (next >= unit->nonce_end) { allocator.complete(unit->id); telemetry.headers_complete.fetch_add(1); }
-      else allocator.release(unit->id);
 
-      clReleaseMemObject(candidates_buffer); clReleaseMemObject(count_buffer); clReleaseMemObject(target_buffer); clReleaseMemObject(header_buffer);
-      clReleaseKernel(kernel); clReleaseProgram(program); clReleaseCommandQueue(queue); clReleaseContext(context);
-    } catch (const std::exception& error) {
-      allocator.release(unit->id);
-      telemetry.event(std::string("[GPU] erreur, CPU maintenu: ") + error.what());
+            processed += count64;
+          }
+
+          next += processed;
+
+          allocator.update_progress(
+              unit->id,
+              next,
+              processed);
+
+          telemetry.set_progress(
+              unit->nonce_start,
+              next,
+              unit->nonce_end);
+
+          telemetry.gpu_hashes.fetch_add(
+              processed,
+              std::memory_order_relaxed);
+
+          if (processed == 0)
+          {
+            break;
+          }
+        }
+
+        if (next >= unit->nonce_end)
+        {
+          allocator.complete(unit->id);
+
+          telemetry.headers_complete.fetch_add(
+              1,
+              std::memory_order_relaxed);
+        }
+        else
+        {
+          allocator.release(unit->id);
+          current_unit_id.clear();
+          break;
+        }
+
+        current_unit_id.clear();
+
+        if (token.stop_requested() ||
+            active_generation.load(
+                std::memory_order_acquire) !=
+                job.generation)
+        {
+          break;
+        }
+
+        unit =
+            allocator.acquire(
+                WorkerKind::Gpu);
+
+        if (!unit)
+        {
+          telemetry.event(
+              "[GPU] aucune unité disponible après "
+              "complétion");
+
+          break;
+        }
+      }
+
+      release_all();
+    }
+    catch (const std::exception &error)
+    {
+      if (!current_unit_id.empty())
+      {
+        allocator.release(current_unit_id);
+      }
+
+      release_all();
+
+      telemetry.event(
+          std::string(
+              "[GPU] erreur, CPU maintenu: ") +
+          error.what());
     }
   }
 #endif

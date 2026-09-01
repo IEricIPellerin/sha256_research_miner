@@ -38,6 +38,7 @@ class WorkAllocator {
                         const std::string& prevhash,
                         const std::string& extranonce1,
                         unsigned extranonce2_size,
+                        const std::string& work_fingerprint,
                         unsigned cpu_workers,
                         bool gpu_enabled,
                         std::uint64_t generation);

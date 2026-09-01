@@ -1,11 +1,10 @@
 {
+  "batch_size": 4194304,
+  "device_name": "gfx1100",
+  "driver": "3679.0 (PAL,LC)",
+  "global_work_size": 1048576,
+  "local_work_size": 128,
   "schema_version": 1,
-  "device_name": "",
-  "vendor": "",
-  "driver": "",
-  "local_work_size": 0,
-  "global_work_size": 0,
-  "batch_size": 0,
-  "tuned": false
+  "tuned": true,
+  "vendor": "Advanced Micro Devices, Inc."
 }
-

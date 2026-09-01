@@ -38,6 +38,32 @@ std::string reverse_hex(std::span<const std::uint8_t> bytes) {
   return crypto::to_hex(reversed);
 }
 
+std::string live_work_fingerprint(
+    const stratum::StratumJob& job,
+    const std::string& extranonce1,
+    const unsigned extranonce2_size) {
+  nlohmann::json value = {
+      {"job_id", job.job_id},
+      {"prevhash", job.prevhash},
+      {"coinbase1", job.coinbase1},
+      {"coinbase2", job.coinbase2},
+      {"merkle_branches", job.merkle_branches},
+      {"version", job.version},
+      {"nbits", job.nbits},
+      {"ntime", job.ntime},
+      {"extranonce1", extranonce1},
+      {"extranonce2_size", extranonce2_size},
+  };
+
+  const auto serialized = value.dump();
+
+  return crypto::digest_hex(
+      crypto::sha256(
+          std::span<const std::uint8_t>(
+              reinterpret_cast<const std::uint8_t*>(serialized.data()),
+              serialized.size())));
+}
+
 std::string allocator_state_name(const config::Mode mode) {
   if (mode == config::Mode::Live) return "live_state.json";
   if (mode == config::Mode::HistoricalTest) return "historical_state.json";
@@ -177,10 +203,25 @@ struct MiningController::Impl {
     if (previous_prevhash.empty() || previous_prevhash != job.prevhash) event("[JOB] NOUVEAU BLOC / NOUVEAU PREVHASH");
     else event("[JOB] MISE À JOUR DU JOB");
     previous_prevhash = job.prevhash;
-    const auto generation = active_generation.load(std::memory_order_acquire);
-    const auto resumed = allocator.prepare_live_job(job.job_id, job.prevhash, extranonce1, extranonce2_size,
-                                                    config.cpu.enabled ? config.cpu.threads : 1U,
-                                                    config.gpu.enabled, generation);
+    const auto generation =
+        active_generation.load(std::memory_order_acquire);
+
+    const auto work_fingerprint =
+        live_work_fingerprint(
+            job,
+            extranonce1,
+            extranonce2_size);
+
+    const auto resumed =
+        allocator.prepare_live_job(
+            job.job_id,
+            job.prevhash,
+            extranonce1,
+            extranonce2_size,
+            work_fingerprint,
+            config.cpu.enabled ? config.cpu.threads : 1U,
+            config.gpu.enabled,
+            generation);
     event(resumed ? "[CHECKPOINT] travail CKPool compatible repris" : "[CHECKPOINT] nouveau travail; ancien état incompatible marqué STALE");
     const LiveMiningJob mining_job{job, extranonce1, bitcoin::share_target_from_difficulty(share_difficulty),
                                    bitcoin::target_from_nbits(job.nbits), generation};

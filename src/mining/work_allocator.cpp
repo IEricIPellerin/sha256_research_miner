@@ -85,6 +85,7 @@ void WorkAllocator::load_existing() {
 }
 
 std::string WorkAllocator::encode_extranonce2(const std::uint64_t value, const unsigned size) {
+  if (size == 0) return "";
   if (size > 8) throw std::invalid_argument("extranonce2_size greater than 8 is not supported by the allocator counter");
   if (size < 8 && value >= (std::uint64_t{1} << (size * 8U))) throw std::overflow_error("extranonce2 counter exhausted");
   std::ostringstream stream;
@@ -96,50 +97,107 @@ bool WorkAllocator::prepare_live_job(const std::string& job_id,
                                      const std::string& prevhash,
                                      const std::string& extranonce1,
                                      const unsigned extranonce2_size,
+                                     const std::string& work_fingerprint,
                                      const unsigned cpu_workers,
                                      const bool gpu_enabled,
                                      const std::uint64_t generation) {
   std::scoped_lock lock(mutex_);
-  const bool compatible = metadata_.value("last_job_id", "") == job_id &&
-                          metadata_.value("last_prevhash", "") == prevhash &&
-                          metadata_.value("extranonce1", "") == extranonce1 &&
-                          metadata_.value("extranonce2_size", 0U) == extranonce2_size &&
-                          std::any_of(units_.begin(), units_.end(), [&](const WorkUnit& unit) {
-                            return unit.job_id == job_id && unit.status != WorkStatus::Stale;
-                          });
+
+  const bool compatible =
+      metadata_.value("last_job_id", "") == job_id &&
+      metadata_.value("last_prevhash", "") == prevhash &&
+      metadata_.value("extranonce1", "") == extranonce1 &&
+      metadata_.value("extranonce2_size", 0U) == extranonce2_size &&
+      metadata_.value("work_fingerprint", "") == work_fingerprint &&
+      std::any_of(units_.begin(), units_.end(), [&](const WorkUnit& unit) {
+        return unit.job_id == job_id && unit.status != WorkStatus::Stale;
+      });
+
   if (!compatible) {
     for (auto& unit : units_) {
-      if (unit.status != WorkStatus::Complete) unit.status = WorkStatus::Stale;
+      if (unit.status != WorkStatus::Complete) {
+        unit.status = WorkStatus::Stale;
+      }
     }
-    create_units(job_id, prevhash, extranonce2_size, cpu_workers, gpu_enabled, generation);
+
+    create_units(
+        job_id,
+        prevhash,
+        extranonce2_size,
+        cpu_workers,
+        gpu_enabled,
+        generation);
   } else {
     for (auto& unit : units_) {
-      if (unit.status == WorkStatus::InProgress) unit.status = WorkStatus::Pending;
-      if (unit.status == WorkStatus::Pending) unit.generation = generation;
+      if (unit.status == WorkStatus::InProgress) {
+        unit.status = WorkStatus::Pending;
+      }
+
+      if (unit.status == WorkStatus::Pending) {
+        unit.generation = generation;
+      }
     }
+
     if (extranonce2_size > 0) {
-      auto next_counter = metadata_.value("next_extranonce2_counter", 0ULL);
-      const auto has_cpu = std::any_of(units_.begin(), units_.end(), [&](const WorkUnit& unit) {
-        return unit.job_id == job_id && unit.worker == WorkerKind::Cpu &&
-               (unit.status == WorkStatus::Pending || unit.status == WorkStatus::InProgress);
-      });
-      if (!has_cpu) append_live_group(WorkerKind::Cpu, job_id, prevhash, extranonce2_size,
-                                      cpu_workers, generation, next_counter++);
-      const auto has_gpu = std::any_of(units_.begin(), units_.end(), [&](const WorkUnit& unit) {
-        return unit.job_id == job_id && unit.worker == WorkerKind::Gpu &&
-               (unit.status == WorkStatus::Pending || unit.status == WorkStatus::InProgress);
-      });
-      if (gpu_enabled && !has_gpu) append_live_group(WorkerKind::Gpu, job_id, prevhash,
-                                                     extranonce2_size, cpu_workers, generation, next_counter++);
+      auto next_counter =
+          metadata_.value("next_extranonce2_counter", 0ULL);
+
+      const auto has_cpu =
+          std::any_of(
+              units_.begin(),
+              units_.end(),
+              [&](const WorkUnit& unit) {
+                return unit.job_id == job_id &&
+                       unit.worker == WorkerKind::Cpu &&
+                       (unit.status == WorkStatus::Pending ||
+                        unit.status == WorkStatus::InProgress);
+              });
+
+      if (!has_cpu) {
+        append_live_group(
+            WorkerKind::Cpu,
+            job_id,
+            prevhash,
+            extranonce2_size,
+            cpu_workers,
+            generation,
+            next_counter++);
+      }
+
+      const auto has_gpu =
+          std::any_of(
+              units_.begin(),
+              units_.end(),
+              [&](const WorkUnit& unit) {
+                return unit.job_id == job_id &&
+                       unit.worker == WorkerKind::Gpu &&
+                       (unit.status == WorkStatus::Pending ||
+                        unit.status == WorkStatus::InProgress);
+              });
+
+      if (gpu_enabled && !has_gpu) {
+        append_live_group(
+            WorkerKind::Gpu,
+            job_id,
+            prevhash,
+            extranonce2_size,
+            cpu_workers,
+            generation,
+            next_counter++);
+      }
+
       metadata_["next_extranonce2_counter"] = next_counter;
     }
   }
+
   metadata_["last_job_id"] = job_id;
   metadata_["last_prevhash"] = prevhash;
   metadata_["extranonce1"] = extranonce1;
   metadata_["extranonce2_size"] = extranonce2_size;
+  metadata_["work_fingerprint"] = work_fingerprint;
   metadata_["cpu_workers"] = cpu_workers;
   metadata_["gpu_enabled"] = gpu_enabled;
+
   return compatible;
 }
 

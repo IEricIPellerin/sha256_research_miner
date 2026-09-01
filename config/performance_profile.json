@@ -3,7 +3,7 @@
   "cpu": {
     "best_threads": 32,
     "enabled": true,
-    "hash_rate_hps": 30617013.77288847
+    "hash_rate_hps": 30726420.200309735
   },
   "gpu": {
     "batch_size": 1048576,
@@ -14,7 +14,7 @@
     "enabled": true,
     "global_memory_bytes": 25753026560,
     "global_work_size": 1048576,
-    "hash_rate_hps": 1517458832.352535,
+    "hash_rate_hps": 1532959399.6549933,
     "index": 0,
     "local_work_size": 64,
     "max_work_group_size": 256,
@@ -25,6 +25,6 @@
   "measurement_ms": 1000,
   "mode": "benchmark",
   "schema_version": 1,
-  "timestamp_utc": "2026-08-31T22:55:14.964Z",
+  "timestamp_utc": "2026-09-01T01:00:30.671Z",
   "warmup_ms": 250
 }

@@ -8,12 +8,22 @@
 #include <iostream>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
 std::atomic_bool interrupted{false};
 void handle_signal(int) { interrupted.store(true, std::memory_order_release); }
 }
 
 int main(int argc, char** argv) {
+
+  #ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+  #endif
+
   try {
     std::filesystem::path config_path = "config/miner.json";
     bool check_only = false;

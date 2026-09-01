@@ -11,7 +11,7 @@
   },
   "research": {
     "enabled": true,
-    "round_start": 1,
+    "round_start": 64,
     "round_end": 64,
     "sample_count": 4096
   },

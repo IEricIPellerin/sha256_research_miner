@@ -16,7 +16,7 @@
     "auto_tune": true
   },
   "console": {
-    "refresh_ms": 1000,
+    "refresh_ms": 5000,
     "show_job_events": true,
     "show_best_hash": true
   },

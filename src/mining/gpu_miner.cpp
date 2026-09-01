@@ -772,6 +772,8 @@ struct GpuMiner::Impl {
       {
         current_unit_id = unit->id;
 
+        telemetry.set_gpu_extranonce2(unit->extranonce2);
+
         built =
             stratum::build_work(
                 job.job,
@@ -960,7 +962,7 @@ struct GpuMiner::Impl {
               next,
               processed);
 
-          telemetry.set_progress(
+          telemetry.set_gpu_progress(
               unit->nonce_start,
               next,
               unit->nonce_end);

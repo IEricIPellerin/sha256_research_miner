@@ -51,22 +51,35 @@ void Telemetry::set_worker_state(const unsigned cpu_threads, std::string cpu_ext
   gpu_extranonce2_ = std::move(gpu_extranonce2);
 }
 
+void Telemetry::set_cpu_extranonce2(std::string extranonce2) {
+  std::scoped_lock lock(mutex_);
+  cpu_extranonce2_ = std::move(extranonce2);
+}
+
+void Telemetry::set_gpu_extranonce2(std::string extranonce2) {
+  std::scoped_lock lock(mutex_);
+  gpu_extranonce2_ = std::move(extranonce2);
+}
+
 void Telemetry::observe_best(const std::string& hash) {
   std::scoped_lock lock(mutex_);
   if (best_hash_.empty() || hash < best_hash_) best_hash_ = hash;
 }
 
-void Telemetry::set_progress(const std::uint64_t nonce_start, const std::uint64_t nonce_next,
-                             const std::uint64_t nonce_end) {
-  nonce_start_.store(nonce_start, std::memory_order_relaxed);
-  nonce_next_.store(nonce_next, std::memory_order_relaxed);
-  nonce_end_.store(nonce_end, std::memory_order_relaxed);
+void Telemetry::set_gpu_progress(const std::uint64_t nonce_start,
+                                 const std::uint64_t nonce_next,
+                                 const std::uint64_t nonce_end) {
+  gpu_nonce_start_.store(nonce_start, std::memory_order_relaxed);
+  gpu_nonce_next_.store(nonce_next, std::memory_order_relaxed);
+  gpu_nonce_end_.store(nonce_end, std::memory_order_relaxed);
 }
 
 void Telemetry::render(const std::stop_token token) {
   auto previous_time = std::chrono::steady_clock::now();
-  std::uint64_t previous_cpu = 0;
-  std::uint64_t previous_gpu = 0;
+  std::uint64_t previous_cpu =
+      cpu_hashes.load(std::memory_order_relaxed);
+  std::uint64_t previous_gpu =
+      gpu_hashes.load(std::memory_order_relaxed);
   while (!token.stop_requested()) {
     auto remaining = std::chrono::milliseconds(refresh_ms_);
     while (!token.stop_requested() && remaining.count() > 0) {
@@ -82,16 +95,22 @@ void Telemetry::render(const std::stop_token token) {
     const auto cpu_rate = elapsed > 0 ? (cpu - previous_cpu) / elapsed : 0.0;
     const auto gpu_rate = elapsed > 0 ? (gpu - previous_gpu) / elapsed : 0.0;
     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - started_).count();
-    const auto range_start = nonce_start_.load(std::memory_order_relaxed);
-    const auto range_next = nonce_next_.load(std::memory_order_relaxed);
-    const auto range_end = nonce_end_.load(std::memory_order_relaxed);
+    const auto range_start =
+        gpu_nonce_start_.load(std::memory_order_relaxed);
+    const auto range_next =
+        gpu_nonce_next_.load(std::memory_order_relaxed);
+    const auto range_end =
+        gpu_nonce_end_.load(std::memory_order_relaxed);
     const auto range_length = range_end > range_start ? range_end - range_start : 0;
     const auto range_done = range_next > range_start ? std::min(range_next, range_end) - range_start : 0;
     const auto progress = range_length > 0 ? 100.0 * static_cast<double>(range_done) / static_cast<double>(range_length) : 0.0;
     const auto total_rate = cpu_rate + gpu_rate;
-    const auto eta = total_rate > 0.0 && range_end > range_next
-                         ? static_cast<std::uint64_t>(static_cast<double>(range_end - range_next) / total_rate)
-                         : 0ULL;
+    const auto eta =
+        gpu_rate > 0.0 && range_end > range_next
+            ? static_cast<std::uint64_t>(
+                  static_cast<double>(range_end - range_next) /
+                  gpu_rate)
+            : 0ULL;
     previous_time = now; previous_cpu = cpu; previous_gpu = gpu;
 
     std::scoped_lock lock(mutex_);
@@ -112,8 +131,8 @@ void Telemetry::render(const std::stop_token token) {
               << " GPU=" << gpu_rate / 1e6 << " MH/s(" << gpu_name_ << ')'
               << " total_rate=" << total_rate / 1e6 << " MH/s"
               << " total=" << (cpu + gpu)
-              << " headers=" << headers_complete.load()
-              << " progress=" << progress << "% ETA=" << eta << 's'
+              << " units=" << headers_complete.load()
+              << " GPU_progress=" << progress << "% GPU_ETA=" << eta << 's'
               << " shares=" << shares.load() << '/' << accepted.load() << '/' << rejected.load()
               << " stale=" << stale_jobs.load()
               << " best=" << (short_best.empty() ? "-" : short_best)

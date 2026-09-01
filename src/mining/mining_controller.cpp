@@ -424,6 +424,30 @@ struct MiningController::Impl {
     std::copy(bytes.begin(), bytes.end(), header.begin());
     bitcoin::set_nonce(header, 0);
     const auto header_id = crypto::digest_hex(crypto::sha256(std::span<const std::uint8_t>(header.data(), 76)));
+
+    if (config.historical.known_nonce) {
+        auto validation = header;
+        bitcoin::set_nonce(validation, *config.historical.known_nonce);
+
+        const auto standard = crypto::sha256d(validation);
+        const auto reduced_64 = crypto::reduced_sha256d(validation, 64);
+
+        if (standard != reduced_64) {
+            throw std::runtime_error(
+                "research validation failed: reduced SHA256d round 64 differs from standard SHA256d");
+        }
+
+        const auto actual = crypto::bitcoin_hash_hex(standard);
+
+        if (!config.historical.expected_hash.empty() &&
+            actual != config.historical.expected_hash) {
+            throw std::runtime_error(
+                "research validation failed: expected_hash mismatch: computed " + actual);
+        }
+
+        event("[RESEARCH] validation SHA256d round=64 OK: " + actual);
+    }
+
     checkpoint::StateStore state_store(config.project_root / "state" / allocator_state_name(config.mode));
     auto state = state_store.load_or(nlohmann::json::object());
     if (state.value("header_id", "") != header_id) state = nlohmann::json::object();

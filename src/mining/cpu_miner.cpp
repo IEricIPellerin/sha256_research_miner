@@ -47,6 +47,9 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
   while (!token.stop_requested() && active_generation_.load(std::memory_order_acquire) == job.generation) {
     auto unit = allocator_.acquire(WorkerKind::Cpu);
     if (!unit) return;
+
+    telemetry_.set_cpu_extranonce2(unit->extranonce2);
+
     auto built = stratum::build_work(job.job, job.extranonce1, unit->extranonce2, 0);
     crypto::Digest best{};
     best.fill(0xff);
@@ -71,7 +74,6 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
       if (pending >= checkpoint_batch) {
         const auto best_text = crypto::bitcoin_hash_hex(best);
         allocator_.update_progress(unit->id, nonce + 1, pending, best_text, best_nonce);
-        telemetry_.set_progress(unit->nonce_start, nonce + 1, unit->nonce_end);
         telemetry_.cpu_hashes.fetch_add(pending, std::memory_order_relaxed);
         telemetry_.observe_best(best_text);
         pending = 0;
@@ -81,7 +83,6 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
     if (pending != 0) {
       const auto best_text = crypto::bitcoin_hash_hex(best);
       allocator_.update_progress(unit->id, nonce, pending, best_text, best_nonce);
-      telemetry_.set_progress(unit->nonce_start, nonce, unit->nonce_end);
       telemetry_.cpu_hashes.fetch_add(pending, std::memory_order_relaxed);
       telemetry_.observe_best(best_text);
     }

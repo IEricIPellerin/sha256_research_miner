@@ -38,6 +38,40 @@ std::string reverse_hex(std::span<const std::uint8_t> bytes) {
   return crypto::to_hex(reversed);
 }
 
+std::string sha256_word_hex(const std::uint32_t value) {
+  std::ostringstream output;
+  output << std::hex << std::nouppercase << std::setfill('0') << std::setw(8) << value;
+  return output.str();
+}
+
+nlohmann::json sha256_rounds_json(const std::vector<crypto::Sha256RoundTrace>& rounds) {
+  auto result = nlohmann::json::array();
+  for (const auto& trace : rounds) {
+    result.push_back({
+        {"compression", trace.compression_index},
+        {"round", trace.round_index + 1U},
+        {"w", sha256_word_hex(trace.w)},
+        {"sum0", sha256_word_hex(trace.sum0)},
+        {"sum1", sha256_word_hex(trace.sum1)},
+        {"choice", sha256_word_hex(trace.choice)},
+        {"majority", sha256_word_hex(trace.majority)},
+        {"temp1", sha256_word_hex(trace.temp1)},
+        {"temp2", sha256_word_hex(trace.temp2)},
+        {"before", {
+            {"a", sha256_word_hex(trace.a_before)}, {"b", sha256_word_hex(trace.b_before)},
+            {"c", sha256_word_hex(trace.c_before)}, {"d", sha256_word_hex(trace.d_before)},
+            {"e", sha256_word_hex(trace.e_before)}, {"f", sha256_word_hex(trace.f_before)},
+            {"g", sha256_word_hex(trace.g_before)}, {"h", sha256_word_hex(trace.h_before)}}},
+        {"after", {
+            {"a", sha256_word_hex(trace.a_after)}, {"b", sha256_word_hex(trace.b_after)},
+            {"c", sha256_word_hex(trace.c_after)}, {"d", sha256_word_hex(trace.d_after)},
+            {"e", sha256_word_hex(trace.e_after)}, {"f", sha256_word_hex(trace.f_after)},
+            {"g", sha256_word_hex(trace.g_after)}, {"h", sha256_word_hex(trace.h_after)}}},
+    });
+  }
+  return result;
+}
+
 std::string live_work_fingerprint(
     const stratum::StratumJob& job,
     const std::string& extranonce1,
@@ -431,10 +465,11 @@ struct MiningController::Impl {
 
         const auto standard = crypto::sha256d(validation);
         const auto reduced_64 = crypto::reduced_sha256d(validation, 64);
+        const auto trace = crypto::trace_reduced_sha256d(validation, 64);
 
-        if (standard != reduced_64) {
+        if (standard != reduced_64 || standard != trace.digest) {
             throw std::runtime_error(
-                "research validation failed: reduced SHA256d round 64 differs from standard SHA256d");
+                "research validation failed: reduced or traced SHA256d round 64 differs from standard SHA256d");
         }
 
         const auto actual = crypto::bitcoin_hash_hex(standard);
@@ -445,7 +480,38 @@ struct MiningController::Impl {
                 "research validation failed: expected_hash mismatch: computed " + actual);
         }
 
+        constexpr std::size_t first_sha_rounds = 128;
+        constexpr std::size_t second_sha_rounds = 64;
+        constexpr std::size_t total_traced_rounds = first_sha_rounds + second_sha_rounds;
+        if (trace.first_sha.rounds.size() != first_sha_rounds ||
+            trace.second_sha.rounds.size() != second_sha_rounds) {
+            throw std::runtime_error("research validation failed: Genesis SHA256d trace must contain 128 + 64 rounds");
+        }
+        if (trace.second_sha.rounds.front().compression_index != 0) {
+            throw std::runtime_error("research validation failed: second SHA compression index must restart at zero");
+        }
+
+        nlohmann::json detailed_trace = {
+            {"header_id", header_id},
+            {"nonce", *config.historical.known_nonce},
+            {"rounds_per_compression", 64},
+            {"total_traced_rounds", total_traced_rounds},
+            {"hash", actual},
+            {"first_sha", {
+                {"digest", crypto::digest_hex(trace.first_sha.digest)},
+                {"digest_format", "sha256_digest_hex"},
+                {"compressions", 2},
+                {"round_trace", sha256_rounds_json(trace.first_sha.rounds)}}},
+            {"second_sha", {
+                {"digest", crypto::digest_hex(trace.second_sha.digest)},
+                {"digest_format", "sha256_digest_hex"},
+                {"compressions", 1},
+                {"round_trace", sha256_rounds_json(trace.second_sha.rounds)}}},
+        };
+        logger.save_json_atomic(config.logging.directory / "research_trace_known_nonce.json", detailed_trace);
+
         event("[RESEARCH] validation SHA256d round=64 OK: " + actual);
+        event("[RESEARCH] trace détaillée nonce connu sauvegardée: 192 rounds");
     }
 
     checkpoint::StateStore state_store(config.project_root / "state" / allocator_state_name(config.mode));

@@ -15,6 +15,14 @@ Digest reduced_sha256d(const std::span<const std::uint8_t> data, const unsigned 
   return sha256d_with_rounds(data, rounds);
 }
 
+ReducedSha256dTrace trace_reduced_sha256d(const std::span<const std::uint8_t> data, const unsigned rounds) {
+  ReducedSha256dTrace result;
+  result.first_sha = sha256_with_trace(data, rounds);
+  result.second_sha = sha256_with_trace(result.first_sha.digest, rounds);
+  result.digest = result.second_sha.digest;
+  return result;
+}
+
 unsigned hamming_weight(const Digest& value) {
   unsigned total = 0;
   for (const auto byte : value) total += std::popcount(byte);

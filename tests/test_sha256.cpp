@@ -14,6 +14,14 @@ TEST_CASE("SHA-256 official abc vector") {
   const std::string text = "abc";
   const auto bytes = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
   REQUIRE_EQ(srm::crypto::digest_hex(srm::crypto::sha256(bytes)), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+  const auto trace = srm::crypto::sha256_with_trace(bytes, 64);
+  REQUIRE_EQ(trace.digest, srm::crypto::sha256(bytes));
+  REQUIRE_EQ(trace.rounds.size(), 64U);
+  for (std::size_t i = 0; i < trace.rounds.size(); ++i) {
+    REQUIRE_EQ(trace.rounds[i].compression_index, 0U);
+    REQUIRE_EQ(trace.rounds[i].round_index, i);
+  }
 }
 
 TEST_CASE("reduced SHA-256 N=64 equals reference") {

@@ -30,9 +30,12 @@ std::uint32_t read_be32(const std::uint8_t* p) {
          static_cast<std::uint32_t>(p[3]);
 }
 
+template <bool CollectTrace>
 void compress(std::array<std::uint32_t, 8>& state,
               const std::uint8_t* block,
-              const unsigned rounds) {
+              const unsigned rounds,
+              std::vector<Sha256RoundTrace>* round_traces = nullptr,
+              const unsigned compression_index = 0) {
   std::array<std::uint32_t, 64> schedule{};
   for (std::size_t i = 0; i < 16; ++i) schedule[i] = read_be32(block + i * 4);
   for (std::size_t i = 16; i < schedule.size(); ++i) {
@@ -44,6 +47,14 @@ void compress(std::array<std::uint32_t, 8>& state,
   auto a = state[0]; auto b = state[1]; auto c = state[2]; auto d = state[3];
   auto e = state[4]; auto f = state[5]; auto g = state[6]; auto h = state[7];
   for (unsigned i = 0; i < rounds; ++i) {
+    if constexpr (CollectTrace) {
+      auto& trace = round_traces->emplace_back();
+      trace.compression_index = compression_index;
+      trace.round_index = i;
+      trace.w = schedule[i];
+      trace.a_before = a; trace.b_before = b; trace.c_before = c; trace.d_before = d;
+      trace.e_before = e; trace.f_before = f; trace.g_before = g; trace.h_before = h;
+    }
     const auto sum1 = std::rotr(e, 6) ^ std::rotr(e, 11) ^ std::rotr(e, 25);
     const auto choice = (e & f) ^ (~e & g);
     const auto temp1 = h + sum1 + choice + kTable[i] + schedule[i];
@@ -52,6 +63,13 @@ void compress(std::array<std::uint32_t, 8>& state,
     const auto temp2 = sum0 + majority;
     h = g; g = f; f = e; e = d + temp1;
     d = c; c = b; b = a; a = temp1 + temp2;
+    if constexpr (CollectTrace) {
+      auto& trace = round_traces->back();
+      trace.sum0 = sum0; trace.sum1 = sum1; trace.choice = choice; trace.majority = majority;
+      trace.temp1 = temp1; trace.temp2 = temp2;
+      trace.a_after = a; trace.b_after = b; trace.c_after = c; trace.d_after = d;
+      trace.e_after = e; trace.f_after = f; trace.g_after = g; trace.h_after = h;
+    }
   }
 
   state[0] += a; state[1] += b; state[2] += c; state[3] += d;
@@ -65,14 +83,23 @@ int hex_digit(const char c) {
   throw std::invalid_argument("invalid hexadecimal character");
 }
 
-}  // namespace
-
-Digest sha256_with_rounds(const std::span<const std::uint8_t> data, const unsigned rounds) {
+template <bool CollectTrace>
+Digest sha256_impl(const std::span<const std::uint8_t> data,
+                   const unsigned rounds,
+                   std::vector<Sha256RoundTrace>* round_traces = nullptr) {
   if (rounds < 1 || rounds > 64) throw std::invalid_argument("SHA-256 rounds must be in [1,64]");
   auto state = kInitial;
+  unsigned compression_index = 0;
+  const auto compress_block = [&](const std::uint8_t* block) {
+    if constexpr (CollectTrace) {
+      compress<true>(state, block, rounds, round_traces, compression_index++);
+    } else {
+      compress<false>(state, block, rounds);
+    }
+  };
   std::size_t offset = 0;
   while (data.size() - offset >= 64) {
-    compress(state, data.data() + offset, rounds);
+    compress_block(data.data() + offset);
     offset += 64;
   }
 
@@ -85,8 +112,8 @@ Digest sha256_with_rounds(const std::span<const std::uint8_t> data, const unsign
   for (unsigned i = 0; i < 8; ++i) {
     tail[padded_size - 1U - i] = static_cast<std::uint8_t>(bit_length >> (i * 8U));
   }
-  compress(state, tail.data(), rounds);
-  if (padded_size == 128) compress(state, tail.data() + 64, rounds);
+  compress_block(tail.data());
+  if (padded_size == 128) compress_block(tail.data() + 64);
 
   Digest digest{};
   for (std::size_t i = 0; i < state.size(); ++i) {
@@ -96,6 +123,18 @@ Digest sha256_with_rounds(const std::span<const std::uint8_t> data, const unsign
     digest[i * 4 + 3] = static_cast<std::uint8_t>(state[i]);
   }
   return digest;
+}
+
+}  // namespace
+
+Digest sha256_with_rounds(const std::span<const std::uint8_t> data, const unsigned rounds) {
+  return sha256_impl<false>(data, rounds);
+}
+
+Sha256TraceResult sha256_with_trace(const std::span<const std::uint8_t> data, const unsigned rounds) {
+  Sha256TraceResult result;
+  result.digest = sha256_impl<true>(data, rounds, &result.rounds);
+  return result;
 }
 
 Digest sha256(const std::span<const std::uint8_t> data) { return sha256_with_rounds(data, 64); }

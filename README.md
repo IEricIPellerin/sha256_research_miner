@@ -1,3 +1,4 @@
+<!--README.md-->
 # sha256_research_miner
 
 Mineur et laboratoire SHA-256d C++20 pour Windows 11, VS Code, Solo CKPool et GPU AMD/OpenCL. Le dépôt sépare strictement le travail live, les scans historiques et les expériences reduced-rounds.
@@ -16,14 +17,14 @@ Mineur et laboratoire SHA-256d C++20 pour Windows 11, VS Code, Solo CKPool et GP
 - Extranonce2 distincts CPU/GPU quand la taille annoncée le permet; sinon plages de nonce disjointes.
 - Checkpoints atomiques, reprise du `nonce_next` durable et états `PENDING`, `IN_PROGRESS`, `COMPLETE`, `STALE`.
 - Sauvegarde prioritaire d'un candidat réseau avant sa soumission, puis mise à jour atomique avec la réponse CKPool.
-- Modes `historical_test`, `research` et `mock_stratum`, sans connexion ni soumission CKPool dans les modes hors ligne.
+- Modes `benchmark`, `historical_test`, `research` et `mock_stratum`, sans connexion ni soumission CKPool dans les modes hors ligne.
 - Télémétrie agrégée une fois par seconde et événements critiques immédiats.
 - Tests Genesis, vecteurs SHA, Merkle, cibles, endianness, parser Stratum, checkpoint, allocateur et chaîne mock complète.
 - Validation OpenCL/CPU bit à bit sur 4 096 headers lorsque OpenCL est disponible.
 
 ## Prérequis Windows 11
 
-1. Installer **Visual Studio 2022 Build Tools** avec la charge de travail « Développement Desktop en C++ », le SDK Windows 11 et CMake; Visual Studio Community convient aussi.
+1. Installer **Visual Studio 2022 ou plus récent** avec la charge de travail « Développement Desktop en C++ », le SDK Windows 11, CMake et Ninja; Visual Studio 2026 est pris en charge.
 2. Installer [Visual Studio Code](https://code.visualstudio.com/) et accepter les extensions recommandées `C/C++` et `CMake Tools`.
 3. Pour AMD/OpenCL:
    - installer le pilote AMD Adrenalin récent, qui fournit le runtime `OpenCL.dll`;
@@ -56,6 +57,7 @@ L'exécutable se trouve sous `build/windows-release/Release/sha256_research_mine
 Tout passe par JSON; aucune constante du code n'est à modifier.
 
 - `config/miner.json`: live CKPool.
+- `config/benchmark.json`: benchmark SHA256d CPU/OpenCL strictement hors ligne.
 - `config/research.json`: scan historique Genesis court et reproductible.
 - `config/reduced_rounds.json`: laboratoire N=1..64.
 - `config/mock.json`: test Stratum local; aucune connexion à CKPool.
@@ -63,6 +65,16 @@ Tout passe par JSON; aucune constante du code n'est à modifier.
 Le mode live refuse de démarrer tant que `ckpool.username` vaut `CHANGE_ME`. Remplacer cette valeur par `ADRESSE_BITCOIN[.worker]`. Le password par défaut est `x`.
 
 Les champs `historical` ne sont jamais consultés en live. Les modes `historical_test` et `research` ne créent aucun client réseau. `mock_stratum` utilise uniquement l'endpoint explicitement configuré, ici `127.0.0.1:3334`.
+
+## Benchmark SHA256d hors ligne
+
+Le benchmark utilise le vrai SHA256d CPU et le noyau `kernels/sha256d.cl`. Il énumère tous les GPU OpenCL, valide 4 096 résultats GPU contre le CPU, puis mesure séparément les threads CPU et une grille GPU bornée. Par défaut, chaque configuration reçoit 250 ms d'échauffement puis 1 000 ms de mesure: la fenêtre réduit le bruit tout en gardant l'exécution complète raisonnable.
+
+```powershell
+build\windows-release\Release\sha256_research_miner.exe --config config\benchmark.json
+```
+
+`gpu.platform` et `gpu.device` acceptent `auto`, `index:N` ou un nom exact/non ambigu. Sur cette machine, `platform: "index:0"` et `device: "AMD Radeon RX 7900 XTX"` distinguent la carte dédiée du GPU intégré, même lorsque le runtime expose seulement le nom technique `gfx1100`. Le meilleur profil est remplacé atomiquement dans `config/performance_profile.json`. Le benchmark combiné CPU+GPU n'est pas mesuré: les résultats individuels restent comparables et aucune duplication de plage n'est introduite.
 
 Valider un fichier sans lancer le mineur:
 
@@ -161,4 +173,3 @@ results/     journaux et candidats (ignorés par Git)
 ```
 
 La CI GitHub compile et exécute les tests CPU + mock sur `windows-latest`. Le test GPU s'active automatiquement sur une machine possédant le SDK et un périphérique OpenCL.
-

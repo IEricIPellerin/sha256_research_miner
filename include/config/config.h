@@ -5,10 +5,11 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace srm::config {
 
-enum class Mode { Live, HistoricalTest, Research, MockStratum };
+enum class Mode { Live, HistoricalTest, Research, MockStratum, Benchmark };
 
 struct CkpoolConfig {
   std::string host{"stratum.ckpool.org"};
@@ -25,6 +26,7 @@ struct GpuConfig {
   std::string platform{"auto"};
   std::string device{"auto"};
   bool auto_tune{true};
+  std::filesystem::path profile{"state/gpu_profile.json"};
 };
 struct ConsoleConfig {
   unsigned refresh_ms{1000};
@@ -52,6 +54,14 @@ struct ResearchConfig {
   std::uint64_t sample_count{4096};
 };
 
+struct BenchmarkConfig {
+  std::vector<unsigned> cpu_threads{28, 29, 30, 31, 32};
+  unsigned warmup_ms{250};
+  unsigned measurement_ms{1000};
+  std::string header_hex;
+  std::filesystem::path performance_profile{"config/performance_profile.json"};
+};
+
 struct AppConfig {
   Mode mode{Mode::Live};
   CkpoolConfig ckpool;
@@ -61,6 +71,7 @@ struct AppConfig {
   LoggingConfig logging;
   HistoricalConfig historical;
   ResearchConfig research;
+  BenchmarkConfig benchmark;
   unsigned checkpoint_interval_ms{2000};
   std::filesystem::path source_path;
   std::filesystem::path project_root;
@@ -70,4 +81,3 @@ AppConfig load(const std::filesystem::path& path);
 std::string mode_name(Mode mode);
 
 }  // namespace srm::config
-

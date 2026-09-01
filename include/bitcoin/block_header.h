@@ -23,4 +23,3 @@ std::uint32_t get_nonce(const Header& header);
 std::string header_hex(const Header& header);
 
 }  // namespace srm::bitcoin
-

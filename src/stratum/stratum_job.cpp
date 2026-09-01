@@ -56,4 +56,3 @@ BuiltWork build_work(const StratumJob& job,
 }
 
 }  // namespace srm::stratum
-

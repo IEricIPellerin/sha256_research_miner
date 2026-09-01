@@ -14,4 +14,3 @@ Digest sha256d_with_rounds(const std::span<const std::uint8_t> data, const unsig
 }
 
 }  // namespace srm::crypto
-

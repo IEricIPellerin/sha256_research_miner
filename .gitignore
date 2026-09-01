@@ -1,3 +1,4 @@
+#.gitignore
 /build/
 /.vs/
 /.vscode/*.log
@@ -6,3 +7,4 @@
 /results/*.tmp
 !/results/.gitkeep
 /state/*.tmp
+/state/mock_state.json

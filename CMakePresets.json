@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "windows-release",
@@ -20,20 +24,31 @@
       "displayName": "Windows x64 Release (CPU only)",
       "inherits": "windows-release",
       "binaryDir": "${sourceDir}/build/windows-cpu-only",
-      "cacheVariables": { "SRM_ENABLE_OPENCL": "OFF" }
+      "cacheVariables": {
+        "SRM_ENABLE_OPENCL": "OFF"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" },
-    { "name": "windows-cpu-only", "configurePreset": "windows-cpu-only", "configuration": "Release" }
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-cpu-only",
+      "configurePreset": "windows-cpu-only",
+      "configuration": "Release"
+    }
   ],
   "testPresets": [
     {
       "name": "windows-release",
       "configurePreset": "windows-release",
       "configuration": "Release",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }
-

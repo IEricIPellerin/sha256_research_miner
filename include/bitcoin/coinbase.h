@@ -18,4 +18,3 @@ crypto::Digest coinbase_hash(std::string_view coinbase1,
                              std::string_view coinbase2);
 
 }  // namespace srm::bitcoin
-

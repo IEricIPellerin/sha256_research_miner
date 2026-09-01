@@ -7,6 +7,7 @@
 #include "crypto/reduced_sha256.h"
 #include "crypto/sha256d.h"
 #include "logging/result_logger.h"
+#include "mining/benchmark.h"
 #include "mining/cpu_miner.h"
 #include "mining/gpu_miner.h"
 #include "mining/work_allocator.h"
@@ -37,6 +38,13 @@ std::string reverse_hex(std::span<const std::uint8_t> bytes) {
   return crypto::to_hex(reversed);
 }
 
+std::string allocator_state_name(const config::Mode mode) {
+  if (mode == config::Mode::Live) return "live_state.json";
+  if (mode == config::Mode::MockStratum) return "mock_state.json";
+  if (mode == config::Mode::Benchmark) return "benchmark_state.json";
+  return "research_state.json";
+}
+
 }  // namespace
 
 struct MiningController::Impl {
@@ -64,8 +72,7 @@ struct MiningController::Impl {
   explicit Impl(config::AppConfig value)
       : config(std::move(value)), telemetry(config.console.refresh_ms),
         logger(config.logging.directory, config.logging.save_session_log, config.logging.save_block_candidates),
-        allocator(checkpoint::StateStore(config.project_root / "state" /
-                     ((config.mode == config::Mode::Live || config.mode == config::Mode::MockStratum) ? "live_state.json" : "research_state.json")),
+        allocator(checkpoint::StateStore(config.project_root / "state" / allocator_state_name(config.mode)),
                   config::mode_name(config.mode)) {
     const auto saved = allocator.snapshot();
     prior_uptime_ms = saved.value("uptime_ms", 0ULL);
@@ -187,7 +194,7 @@ struct MiningController::Impl {
     }
     auto gpu_name = std::string("désactivé");
     if (config.gpu.enabled) {
-      const auto info = gpu->detect();
+      const auto info = gpu->detect(config.gpu.platform, config.gpu.device);
       gpu_name = info.available ? info.name : "OpenCL absent";
     }
     telemetry.set_worker_state(config.cpu.enabled ? config.cpu.threads : 0, cpu_ex2, gpu_name, gpu_ex2);
@@ -206,7 +213,7 @@ struct MiningController::Impl {
     gpu = std::make_unique<GpuMiner>(allocator, telemetry, active_generation,
                                     [this](Candidate candidate) { on_candidate(std::move(candidate)); },
                                     config.project_root / "kernels" / "sha256d.cl",
-                                    config.project_root / "state" / "gpu_profile.json");
+                                    config.gpu.profile);
     stratum::StratumClient::Callbacks callbacks;
     callbacks.event = [this](const std::string& text) { event(text); };
     callbacks.subscribed = [this](const std::string& value, const unsigned size) {
@@ -436,7 +443,112 @@ struct MiningController::Impl {
     return stop_requested.load() ? 130 : 0;
   }
 
+  int run_benchmark(std::atomic_bool& stop_requested) {
+    const auto bytes = crypto::from_hex(config.benchmark.header_hex);
+    bitcoin::Header header{};
+    std::copy(bytes.begin(), bytes.end(), header.begin());
+
+    gpu = std::make_unique<GpuMiner>(allocator, telemetry, active_generation,
+                                    [](Candidate) {}, config.project_root / "kernels" / "sha256d.cl",
+                                    config.gpu.profile);
+    const auto devices = gpu->enumerate();
+    std::cout << "[BENCHMARK] Périphériques OpenCL détectés: " << devices.size() << '\n';
+    for (const auto& device : devices) {
+      std::cout << "[GPU " << device.index << "] platform_index=" << device.platform_index
+                << " device_index=" << device.device_index << " plateforme=\"" << device.platform
+                << "\" nom_opencl=\"" << device.name << "\" nom_carte=\"" << device.board_name
+                << "\" vendor=\"" << device.vendor
+                << "\" driver=\"" << device.driver << "\" compute_units=" << device.compute_units
+                << " mémoire=" << device.global_memory << " octets max_work_group="
+                << device.max_workgroup_size << '\n';
+    }
+    std::cout << "[BENCHMARK] warm-up=" << config.benchmark.warmup_ms
+              << " ms mesure=" << config.benchmark.measurement_ms << " ms par configuration\n";
+
+    CpuBenchmarkResult cpu_result;
+    if (config.cpu.enabled) {
+      std::cout << "\n[BENCHMARK CPU]\n";
+      cpu_result = benchmark_cpu_sha256d(header, config.benchmark.cpu_threads,
+                                         config.benchmark.warmup_ms, config.benchmark.measurement_ms,
+                                         stop_requested);
+      for (const auto& sample : cpu_result.samples) {
+        std::cout << "threads=" << sample.threads << " hashes=" << sample.hashes
+                  << " durée=" << std::fixed << std::setprecision(6) << sample.seconds
+                  << " s H/s=" << std::setprecision(2) << sample.hash_rate
+                  << " (" << format_hash_rate(sample.hash_rate) << ")\n";
+      }
+      if (!cpu_result.samples.empty()) {
+        std::cout << "meilleur=" << cpu_result.best.threads << " threads, "
+                  << format_hash_rate(cpu_result.best.hash_rate) << '\n';
+      }
+    }
+    if (stop_requested.load(std::memory_order_acquire)) return 130;
+
+    GpuBenchmarkResult gpu_result;
+    if (config.gpu.enabled) {
+      if (devices.empty()) throw std::runtime_error("benchmark GPU requested but no OpenCL GPU was detected");
+      std::cout << "\n[BENCHMARK GPU]\n";
+      gpu_result = gpu->benchmark(header, config.gpu.platform, config.gpu.device, config.gpu.auto_tune,
+                                  config.benchmark.warmup_ms, config.benchmark.measurement_ms);
+      const auto display_name = gpu_result.device.board_name.empty() ? gpu_result.device.name : gpu_result.device.board_name;
+      std::cout << "GPU sélectionné: [GPU " << gpu_result.device.index << "] " << display_name
+                << " | nom OpenCL=" << gpu_result.device.name << " | plateforme=" << gpu_result.device.platform
+                << " | platform_index=" << gpu_result.device.platform_index
+                << " | device_index=" << gpu_result.device.device_index
+                << " | driver=" << gpu_result.device.driver << '\n';
+      std::cout << "validation CPU/GPU 4096 vecteurs: " << (gpu_result.validated ? "OK" : "ÉCHEC") << '\n';
+      for (const auto& sample : gpu_result.samples) {
+        std::cout << "local=" << sample.local_work_size << " global=" << sample.global_work_size
+                  << " batch=" << sample.batch_size << " hashes=" << sample.hashes
+                  << " durée=" << std::fixed << std::setprecision(6) << sample.seconds
+                  << " s H/s=" << std::setprecision(2) << sample.hash_rate
+                  << " (" << format_hash_rate(sample.hash_rate) << ")\n";
+      }
+      std::cout << "meilleur=local=" << gpu_result.best.local_work_size
+                << " global=" << gpu_result.best.global_work_size
+                << " batch=" << gpu_result.best.batch_size << " "
+                << format_hash_rate(gpu_result.best.hash_rate) << '\n';
+    }
+
+    nlohmann::json profile = {
+        {"schema_version", 1},
+        {"timestamp_utc", logging::ResultLogger::utc_now()},
+        {"mode", "benchmark"},
+        {"warmup_ms", config.benchmark.warmup_ms},
+        {"measurement_ms", config.benchmark.measurement_ms},
+        {"combined_hash_rate_hps", nullptr}};
+    profile["cpu"] = {
+        {"enabled", config.cpu.enabled},
+        {"best_threads", cpu_result.best.threads},
+        {"hash_rate_hps", cpu_result.best.hash_rate}};
+    profile["gpu"] = {
+        {"enabled", config.gpu.enabled},
+        {"tuned", gpu_result.validated},
+        {"index", gpu_result.device.index},
+        {"platform", gpu_result.device.platform},
+        {"device_name", gpu_result.device.name},
+        {"board_name", gpu_result.device.board_name},
+        {"vendor", gpu_result.device.vendor},
+        {"driver", gpu_result.device.driver},
+        {"compute_units", gpu_result.device.compute_units},
+        {"global_memory_bytes", gpu_result.device.global_memory},
+        {"max_work_group_size", gpu_result.device.max_workgroup_size},
+        {"local_work_size", gpu_result.best.local_work_size},
+        {"global_work_size", gpu_result.best.global_work_size},
+        {"batch_size", gpu_result.best.batch_size},
+        {"hash_rate_hps", gpu_result.best.hash_rate}};
+    checkpoint::StateStore(config.benchmark.performance_profile).save(profile);
+
+    std::cout << "\n[BENCHMARK FINAL]\n";
+    std::cout << "CPU " << (config.cpu.enabled ? format_hash_rate(cpu_result.best.hash_rate) : "désactivé") << '\n';
+    std::cout << "GPU " << (config.gpu.enabled ? format_hash_rate(gpu_result.best.hash_rate) : "désactivé") << '\n';
+    std::cout << "TOTAL non mesuré: le test combiné est volontairement séparé de cette première version fiable\n";
+    std::cout << "Profil atomique: " << config.benchmark.performance_profile << '\n';
+    return 0;
+  }
+
   int run(std::atomic_bool& stop_requested) {
+    if (config.mode == config::Mode::Benchmark) return run_benchmark(stop_requested);
     if (config.mode == config::Mode::Live || config.mode == config::Mode::MockStratum) return run_live(stop_requested);
     if (config.mode == config::Mode::HistoricalTest) return run_historical(stop_requested);
     return run_research(stop_requested);

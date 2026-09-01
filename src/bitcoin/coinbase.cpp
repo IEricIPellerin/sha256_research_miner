@@ -23,4 +23,3 @@ crypto::Digest coinbase_hash(const std::string_view coinbase1,
 }
 
 }  // namespace srm::bitcoin
-

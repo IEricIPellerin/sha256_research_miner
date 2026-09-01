@@ -57,4 +57,3 @@ class CpuMiner {
 };
 
 }  // namespace srm::mining
-

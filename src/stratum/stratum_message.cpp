@@ -26,4 +26,3 @@ nlohmann::json make_request(const std::int64_t id, std::string method, nlohmann:
 }
 
 }  // namespace srm::stratum
-

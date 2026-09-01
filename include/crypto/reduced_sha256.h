@@ -14,4 +14,3 @@ unsigned hamming_weight(const Digest& value);
 unsigned hamming_distance(const Digest& left, const Digest& right);
 
 }  // namespace srm::crypto
-

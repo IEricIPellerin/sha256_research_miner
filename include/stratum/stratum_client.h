@@ -46,4 +46,3 @@ class StratumClient {
 };
 
 }  // namespace srm::stratum
-

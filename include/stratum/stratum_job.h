@@ -34,4 +34,3 @@ BuiltWork build_work(const StratumJob& job,
                      std::uint32_t nonce = 0);
 
 }  // namespace srm::stratum
-

@@ -128,4 +128,3 @@ std::string bitcoin_hash_hex(const Digest& digest) {
 }
 
 }  // namespace srm::crypto
-

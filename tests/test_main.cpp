@@ -13,4 +13,3 @@ int main() {
   std::cout << (test_support::registry().size() - failures) << '/' << test_support::registry().size() << " tests passed\n";
   return failures == 0 ? 0 : 1;
 }
-

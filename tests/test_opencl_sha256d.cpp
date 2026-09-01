@@ -96,4 +96,3 @@ TEST_CASE("OpenCL SHA256d equals CPU for 4096 deterministic headers") {
 TEST_CASE("OpenCL SHA256d validation is optional when SDK is absent") { REQUIRE(true); }
 
 #endif
-

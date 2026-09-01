@@ -1,3 +1,4 @@
+#tests\run_mock_integration.ps1
 param(
   [Parameter(Mandatory=$true)][string]$Miner,
   [Parameter(Mandatory=$true)][string]$Server,

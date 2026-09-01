@@ -1,0 +1,30 @@
+{
+  "combined_hash_rate_hps": null,
+  "cpu": {
+    "best_threads": 32,
+    "enabled": true,
+    "hash_rate_hps": 30617013.77288847
+  },
+  "gpu": {
+    "batch_size": 1048576,
+    "board_name": "AMD Radeon RX 7900 XTX",
+    "compute_units": 48,
+    "device_name": "gfx1100",
+    "driver": "3679.0 (PAL,LC)",
+    "enabled": true,
+    "global_memory_bytes": 25753026560,
+    "global_work_size": 1048576,
+    "hash_rate_hps": 1517458832.352535,
+    "index": 0,
+    "local_work_size": 64,
+    "max_work_group_size": 256,
+    "platform": "AMD Accelerated Parallel Processing",
+    "tuned": true,
+    "vendor": "Advanced Micro Devices, Inc."
+  },
+  "measurement_ms": 1000,
+  "mode": "benchmark",
+  "schema_version": 1,
+  "timestamp_utc": "2026-08-31T22:55:14.964Z",
+  "warmup_ms": 250
+}

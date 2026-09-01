@@ -174,4 +174,3 @@ bool StratumClient::connected() const noexcept { return impl_->is_connected.load
 bool StratumClient::authorized() const noexcept { return impl_->is_authorized.load(std::memory_order_acquire); }
 
 }  // namespace srm::stratum
-

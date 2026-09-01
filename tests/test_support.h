@@ -39,4 +39,3 @@ inline void require(bool value, const char* text) {
   static void SRM_JOIN(test_, __LINE__)()
 #define REQUIRE(value) test_support::require((value), #value)
 #define REQUIRE_EQ(left,right) test_support::require_equal((left), (right), #left, #right)
-

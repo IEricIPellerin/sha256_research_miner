@@ -1,3 +1,4 @@
+#CMakeLists.txt
 cmake_minimum_required(VERSION 3.24)
 project(sha256_research_miner VERSION 0.1.0 LANGUAGES CXX)
 
@@ -18,10 +19,17 @@ include(FetchContent)
 
 find_package(nlohmann_json 3.11 CONFIG QUIET)
 if(NOT nlohmann_json_FOUND)
-  FetchContent_Declare(nlohmann_json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d)
-  FetchContent_MakeAvailable(nlohmann_json)
+  find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
+  if(NLOHMANN_JSON_INCLUDE_DIR)
+    add_library(nlohmann_json_headers INTERFACE)
+    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json_headers)
+    target_include_directories(nlohmann_json_headers INTERFACE "${NLOHMANN_JSON_INCLUDE_DIR}")
+  else()
+    FetchContent_Declare(nlohmann_json
+      URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+      URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d)
+    FetchContent_MakeAvailable(nlohmann_json)
+  endif()
 endif()
 
 find_path(ASIO_INCLUDE_DIR asio.hpp)
@@ -49,6 +57,7 @@ set(SRM_SOURCES
   src/crypto/sha256d.cpp
   src/crypto/reduced_sha256.cpp
   src/mining/work_allocator.cpp
+  src/mining/benchmark.cpp
   src/mining/cpu_miner.cpp
   src/mining/gpu_miner.cpp
   src/mining/mining_controller.cpp
@@ -74,7 +83,7 @@ endif()
 if(SRM_ENABLE_OPENCL)
   find_package(OpenCL QUIET)
   if(OpenCL_FOUND)
-    target_compile_definitions(srm_core PUBLIC SRM_HAS_OPENCL=1)
+    target_compile_definitions(srm_core PUBLIC SRM_HAS_OPENCL=1 CL_TARGET_OPENCL_VERSION=120)
     target_link_libraries(srm_core PRIVATE OpenCL::OpenCL)
   else()
     message(STATUS "OpenCL SDK not found: building CPU backend and GPU diagnostics fallback")
@@ -101,6 +110,8 @@ if(SRM_BUILD_TESTS)
     tests/test_target.cpp
     tests/test_stratum_parser.cpp
     tests/test_checkpoint.cpp
+    tests/test_config.cpp
+    tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp
     tests/test_opencl_sha256d.cpp)
   target_link_libraries(srm_tests PRIVATE srm_core)

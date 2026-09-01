@@ -24,4 +24,3 @@ crypto::Digest build_merkle_root(const crypto::Digest& coinbase_hash,
 }
 
 }  // namespace srm::bitcoin
-

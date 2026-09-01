@@ -18,4 +18,3 @@ TEST_CASE("target comparison uses Bitcoin little-endian hash semantics") {
   one[0] = 2;
   REQUIRE(!srm::bitcoin::hash_meets_target(one, target));
 }
-

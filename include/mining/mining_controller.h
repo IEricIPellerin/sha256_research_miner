@@ -21,4 +21,3 @@ class MiningController {
 };
 
 }  // namespace srm::mining
-

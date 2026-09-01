@@ -16,4 +16,3 @@ TEST_CASE("Merkle branches are combined in supplied order") {
   const auto expected = srm::crypto::sha256d(pair);
   REQUIRE_EQ(srm::bitcoin::build_merkle_root(leaf, {srm::crypto::digest_hex(branch1), srm::crypto::digest_hex(branch2)}), expected);
 }
-

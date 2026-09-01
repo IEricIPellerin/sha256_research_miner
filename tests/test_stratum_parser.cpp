@@ -19,4 +19,3 @@ TEST_CASE("Stratum prevhash word endianness and dword fields") {
   REQUIRE_EQ(srm::crypto::to_hex(std::span<const std::uint8_t>(header.data() + 4, 8)), "0302010007060504");
   REQUIRE_EQ(srm::crypto::to_hex(std::span<const std::uint8_t>(header.data() + 68, 12)), "44332211ddccbbaa04030201");
 }
-

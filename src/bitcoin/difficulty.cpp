@@ -133,4 +133,3 @@ bool hash_meets_target(const crypto::Digest& digest, const Target256& target) {
 }
 
 }  // namespace srm::bitcoin
-

@@ -23,4 +23,3 @@ StratumMessage parse_message(const std::string& line);
 nlohmann::json make_request(std::int64_t id, std::string method, nlohmann::json params);
 
 }  // namespace srm::stratum
-

@@ -22,4 +22,3 @@ std::string digest_hex(const Digest& digest);
 std::string bitcoin_hash_hex(const Digest& digest);
 
 }  // namespace srm::crypto
-

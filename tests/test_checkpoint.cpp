@@ -18,4 +18,3 @@ TEST_CASE("checkpoint atomic replacement leaves valid JSON and no tmp") {
   std::filesystem::remove(path);
   std::filesystem::remove(directory);
 }
-

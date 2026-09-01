@@ -32,4 +32,3 @@ class ResultLogger {
 };
 
 }  // namespace srm::logging
-

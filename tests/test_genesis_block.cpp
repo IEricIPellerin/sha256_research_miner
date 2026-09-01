@@ -10,4 +10,3 @@ TEST_CASE("Bitcoin Genesis header and displayed hash") {
   REQUIRE_EQ(srm::bitcoin::get_nonce(header), 2083236893U);
   REQUIRE_EQ(srm::crypto::bitcoin_hash_hex(srm::crypto::sha256d(header)), "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
 }
-

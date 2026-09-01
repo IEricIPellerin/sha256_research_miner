@@ -7,12 +7,16 @@
 #include "crypto/sha256d.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #ifdef SRM_HAS_OPENCL
@@ -20,6 +24,23 @@
 #endif
 
 namespace srm::mining {
+namespace {
+
+std::string normalized(std::string value) {
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](const unsigned char c) { return !std::isspace(c); }));
+  value.erase(std::find_if(value.rbegin(), value.rend(), [](const unsigned char c) { return !std::isspace(c); }).base(), value.end());
+  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value;
+}
+
+bool is_auto(const std::string& selector) { return normalized(selector) == "auto"; }
+
+bool is_amd(const GpuInfo& device) {
+  const auto vendor = normalized(device.vendor);
+  return vendor.find("amd") != std::string::npos || vendor.find("advanced micro devices") != std::string::npos;
+}
+
+}  // namespace
 
 struct GpuMiner::Impl {
   WorkAllocator& allocator;
@@ -33,6 +54,11 @@ struct GpuMiner::Impl {
 #ifdef SRM_HAS_OPENCL
   cl_platform_id platform_id{};
   cl_device_id device_id{};
+  struct Choice {
+    GpuInfo info;
+    cl_platform_id platform{};
+    cl_device_id device{};
+  };
 #endif
 
   Impl(WorkAllocator& work_allocator,
@@ -59,39 +85,60 @@ struct GpuMiner::Impl {
     return value;
   }
 
-  GpuInfo detect_opencl() {
+  static std::string optional_device_string(const cl_device_id device, const cl_uint field) {
+    std::size_t size = 0;
+    if (clGetDeviceInfo(device, field, 0, nullptr, &size) != CL_SUCCESS || size == 0) return {};
+    std::string value(size, '\0');
+    if (clGetDeviceInfo(device, field, size, value.data(), nullptr) != CL_SUCCESS) return {};
+    while (!value.empty() && value.back() == '\0') value.pop_back();
+    return value;
+  }
+
+  std::vector<Choice> enumerate_opencl() const {
     cl_uint platform_count = 0;
     if (clGetPlatformIDs(0, nullptr, &platform_count) != CL_SUCCESS || platform_count == 0) return {};
     std::vector<cl_platform_id> platforms(platform_count);
     check(clGetPlatformIDs(platform_count, platforms.data(), nullptr), "clGetPlatformIDs");
 
-    struct Choice { cl_platform_id platform; cl_device_id device; bool amd; };
     std::vector<Choice> choices;
-    for (const auto platform : platforms) {
+    for (std::size_t platform_index = 0; platform_index < platforms.size(); ++platform_index) {
+      const auto platform = platforms[platform_index];
       cl_uint count = 0;
       if (clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &count) != CL_SUCCESS || count == 0) continue;
       std::vector<cl_device_id> devices(count);
       check(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, count, devices.data(), nullptr), "clGetDeviceIDs");
-      for (const auto device : devices) {
-        const auto vendor = get_string(device, CL_DEVICE_VENDOR, clGetDeviceInfo);
-        choices.push_back({platform, device, vendor.find("AMD") != std::string::npos || vendor.find("Advanced Micro Devices") != std::string::npos});
+      for (std::size_t device_index = 0; device_index < devices.size(); ++device_index) {
+        const auto device = devices[device_index];
+        GpuInfo value;
+        value.available = true;
+        value.index = choices.size();
+        value.platform_index = platform_index;
+        value.device_index = device_index;
+        value.platform = get_string(platform, CL_PLATFORM_NAME, clGetPlatformInfo);
+        value.name = get_string(device, CL_DEVICE_NAME, clGetDeviceInfo);
+        value.board_name = optional_device_string(device, 0x4038U);  // CL_DEVICE_BOARD_NAME_AMD
+        value.vendor = get_string(device, CL_DEVICE_VENDOR, clGetDeviceInfo);
+        value.driver = get_string(device, CL_DRIVER_VERSION, clGetDeviceInfo);
+        check(clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(value.compute_units), &value.compute_units, nullptr), "compute units");
+        check(clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(value.global_memory), &value.global_memory, nullptr), "global memory");
+        check(clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(value.max_workgroup_size), &value.max_workgroup_size, nullptr), "workgroup size");
+        choices.push_back({std::move(value), platform, device});
       }
     }
+    return choices;
+  }
+
+  GpuInfo detect_opencl(const std::string& platform_selector, const std::string& device_selector) {
+    const auto choices = enumerate_opencl();
     if (choices.empty()) return {};
-    const auto selected = std::find_if(choices.begin(), choices.end(), [](const Choice& choice) { return choice.amd; });
-    const auto& choice = selected == choices.end() ? choices.front() : *selected;
+    std::vector<GpuInfo> devices;
+    devices.reserve(choices.size());
+    for (const auto& choice : choices) devices.push_back(choice.info);
+    const auto selected = GpuMiner::select_device_index(devices, platform_selector, device_selector);
+    const auto& choice = choices.at(selected);
     platform_id = choice.platform;
     device_id = choice.device;
-    GpuInfo result;
-    result.available = true;
-    result.platform = get_string(platform_id, CL_PLATFORM_NAME, clGetPlatformInfo);
-    result.name = get_string(device_id, CL_DEVICE_NAME, clGetDeviceInfo);
-    result.vendor = get_string(device_id, CL_DEVICE_VENDOR, clGetDeviceInfo);
-    result.driver = get_string(device_id, CL_DRIVER_VERSION, clGetDeviceInfo);
-    check(clGetDeviceInfo(device_id, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(result.compute_units), &result.compute_units, nullptr), "compute units");
-    check(clGetDeviceInfo(device_id, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(result.global_memory), &result.global_memory, nullptr), "global memory");
-    check(clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(result.max_workgroup_size), &result.max_workgroup_size, nullptr), "workgroup size");
-    return result;
+    return choice.info;
   }
 
   std::string read_kernel() const {
@@ -100,12 +147,185 @@ struct GpuMiner::Impl {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
   }
 
+  GpuBenchmarkResult benchmark_opencl(const bitcoin::Header& base_header,
+                                      const std::string& platform_selector,
+                                      const std::string& device_selector,
+                                      const bool auto_tune,
+                                      const unsigned warmup_ms,
+                                      const unsigned measurement_ms) {
+    info = detect_opencl(platform_selector, device_selector);
+    if (!info.available) throw std::runtime_error("no OpenCL GPU available");
+
+    cl_context context{};
+    cl_command_queue queue{};
+    cl_program program{};
+    cl_kernel vector_kernel{};
+    cl_kernel scan_kernel{};
+    cl_mem prefix_buffer{};
+    cl_mem output_buffer{};
+    cl_mem target_buffer{};
+    cl_mem count_buffer{};
+    cl_mem candidates_buffer{};
+    const auto release_all = [&] {
+      if (candidates_buffer) clReleaseMemObject(candidates_buffer);
+      if (count_buffer) clReleaseMemObject(count_buffer);
+      if (target_buffer) clReleaseMemObject(target_buffer);
+      if (output_buffer) clReleaseMemObject(output_buffer);
+      if (prefix_buffer) clReleaseMemObject(prefix_buffer);
+      if (scan_kernel) clReleaseKernel(scan_kernel);
+      if (vector_kernel) clReleaseKernel(vector_kernel);
+      if (program) clReleaseProgram(program);
+      if (queue) clReleaseCommandQueue(queue);
+      if (context) clReleaseContext(context);
+    };
+
+    try {
+      cl_int error = CL_SUCCESS;
+      context = clCreateContext(nullptr, 1, &device_id, nullptr, nullptr, &error); check(error, "clCreateContext");
+      // OpenCL 1.2 is the compatibility baseline of the existing kernel and AMD runtime.
+      queue = clCreateCommandQueue(context, device_id, CL_QUEUE_PROFILING_ENABLE, &error); check(error, "clCreateCommandQueue");
+      const auto source = read_kernel();
+      const char* source_pointer = source.c_str();
+      const auto source_size = source.size();
+      program = clCreateProgramWithSource(context, 1, &source_pointer, &source_size, &error); check(error, "clCreateProgramWithSource");
+      error = clBuildProgram(program, 1, &device_id, "-cl-std=CL1.2", nullptr, nullptr);
+      if (error != CL_SUCCESS) {
+        std::size_t size = 0;
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, nullptr, &size);
+        std::string log(size, '\0');
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, size, log.data(), nullptr);
+        throw std::runtime_error("OpenCL kernel compilation failed: " + log);
+      }
+      vector_kernel = clCreateKernel(program, "sha256d_vectors", &error); check(error, "clCreateKernel sha256d_vectors");
+      scan_kernel = clCreateKernel(program, "sha256d_scan", &error); check(error, "clCreateKernel sha256d_scan");
+      prefix_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 76,
+                                     const_cast<std::uint8_t*>(base_header.data()), &error); check(error, "benchmark prefix buffer");
+
+      constexpr std::uint32_t validation_count = 4096;
+      constexpr std::uint32_t validation_start = 0x12340000U;
+      std::vector<std::uint32_t> output(static_cast<std::size_t>(validation_count) * 8U);
+      output_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, output.size() * sizeof(std::uint32_t), nullptr, &error);
+      check(error, "validation output buffer");
+      check(clSetKernelArg(vector_kernel, 0, sizeof(prefix_buffer), &prefix_buffer), "validation prefix arg");
+      check(clSetKernelArg(vector_kernel, 1, sizeof(validation_start), &validation_start), "validation start arg");
+      check(clSetKernelArg(vector_kernel, 2, sizeof(validation_count), &validation_count), "validation count arg");
+      check(clSetKernelArg(vector_kernel, 3, sizeof(output_buffer), &output_buffer), "validation output arg");
+      const std::size_t validation_global = validation_count;
+      std::size_t validation_local = 1;
+      while (validation_local * 2 <= std::min<std::size_t>(64, info.max_workgroup_size)) validation_local *= 2;
+      check(clEnqueueNDRangeKernel(queue, vector_kernel, 1, nullptr, &validation_global, &validation_local, 0, nullptr, nullptr),
+            "validation kernel");
+      check(clFinish(queue), "validation finish");
+      check(clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0, output.size() * sizeof(std::uint32_t),
+                                output.data(), 0, nullptr, nullptr), "validation digest read");
+      auto validation_header = base_header;
+      for (std::uint32_t index = 0; index < validation_count; ++index) {
+        bitcoin::set_nonce(validation_header, validation_start + index);
+        const auto cpu = crypto::sha256d(validation_header);
+        crypto::Digest gpu{};
+        for (std::size_t word = 0; word < 8; ++word) {
+          const auto value = output[static_cast<std::size_t>(index) * 8U + word];
+          gpu[word * 4U] = static_cast<std::uint8_t>(value >> 24U);
+          gpu[word * 4U + 1U] = static_cast<std::uint8_t>(value >> 16U);
+          gpu[word * 4U + 2U] = static_cast<std::uint8_t>(value >> 8U);
+          gpu[word * 4U + 3U] = static_cast<std::uint8_t>(value);
+        }
+        if (gpu != cpu) throw std::runtime_error("GPU validation differs from CPU at deterministic vector " + std::to_string(index));
+      }
+
+      const std::array<std::uint8_t, 32> impossible_target{};
+      target_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, impossible_target.size(),
+                                     const_cast<std::uint8_t*>(impossible_target.data()), &error); check(error, "benchmark target buffer");
+      std::uint32_t zero = 0;
+      count_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(zero), &zero, &error);
+      check(error, "benchmark candidate count buffer");
+      std::array<std::uint32_t, 64> candidate_nonces{};
+      candidates_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(candidate_nonces), nullptr, &error);
+      check(error, "benchmark candidate buffer");
+      check(clSetKernelArg(scan_kernel, 0, sizeof(prefix_buffer), &prefix_buffer), "benchmark prefix arg");
+      check(clSetKernelArg(scan_kernel, 3, sizeof(target_buffer), &target_buffer), "benchmark target arg");
+      check(clSetKernelArg(scan_kernel, 4, sizeof(count_buffer), &count_buffer), "benchmark count arg");
+      check(clSetKernelArg(scan_kernel, 5, sizeof(candidates_buffer), &candidates_buffer), "benchmark candidates arg");
+
+      std::vector<std::tuple<std::size_t, std::size_t, unsigned>> configurations;
+      if (auto_tune) {
+        const std::array<std::size_t, 3> locals{64, 128, 256};
+        const std::array<std::size_t, 3> globals{1U << 16U, 1U << 18U, 1U << 20U};
+        const std::array<unsigned, 3> batch_repeats{1, 4, 16};
+        for (const auto local : locals) {
+          if (local > info.max_workgroup_size) continue;
+          for (const auto global : globals) {
+            for (const auto repeats : batch_repeats) configurations.emplace_back(local, global, repeats);
+          }
+        }
+      } else {
+        std::size_t local = std::min<std::size_t>(256, info.max_workgroup_size);
+        std::size_t global = 1U << 20U;
+        std::uint64_t batch = 1U << 24U;
+        const auto document = checkpoint::StateStore(profile_path).load_or(nlohmann::json::object());
+        const auto profile = document.contains("gpu") ? document.at("gpu") : document;
+        const auto profile_name = profile.value("device_name", profile.value("name", ""));
+        if (profile_name == info.name && profile.value("driver", "") == info.driver) {
+          local = profile.value("local_work_size", local);
+          global = profile.value("global_work_size", global);
+          batch = profile.value("batch_size", batch);
+        }
+        if (local == 0 || local > info.max_workgroup_size) local = std::min<std::size_t>(256, info.max_workgroup_size);
+        if (global == 0) global = 1U << 20U;
+        const auto repeats = static_cast<unsigned>(std::max<std::uint64_t>(1, (batch + global - 1U) / global));
+        configurations.emplace_back(local, global, repeats);
+      }
+
+      GpuBenchmarkResult result;
+      result.device = info;
+      result.validated = true;
+      std::uint32_t nonce_cursor = 0;
+      for (const auto& [local, global, repeats] : configurations) {
+        if (local == 0 || global == 0 || global % local != 0 || global > std::numeric_limits<std::uint32_t>::max()) continue;
+        const auto count = static_cast<std::uint32_t>(global);
+        check(clSetKernelArg(scan_kernel, 2, sizeof(count), &count), "benchmark nonce count arg");
+        check(clEnqueueWriteBuffer(queue, count_buffer, CL_TRUE, 0, sizeof(zero), &zero, 0, nullptr, nullptr),
+              "benchmark candidate reset");
+        const auto run_batch = [&] {
+          for (unsigned repeat = 0; repeat < repeats; ++repeat) {
+            const auto start = nonce_cursor;
+            nonce_cursor += count;
+            check(clSetKernelArg(scan_kernel, 1, sizeof(start), &start), "benchmark nonce start arg");
+            check(clEnqueueNDRangeKernel(queue, scan_kernel, 1, nullptr, &global, &local, 0, nullptr, nullptr),
+                  "benchmark kernel launch");
+          }
+          check(clFinish(queue), "benchmark batch finish");
+          return static_cast<std::uint64_t>(global) * repeats;
+        };
+
+        const auto warmup_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(warmup_ms);
+        do { run_batch(); } while (std::chrono::steady_clock::now() < warmup_deadline);
+        const auto before = std::chrono::steady_clock::now();
+        const auto measurement_deadline = before + std::chrono::milliseconds(measurement_ms);
+        std::uint64_t hashes = 0;
+        do { hashes += run_batch(); } while (std::chrono::steady_clock::now() < measurement_deadline);
+        const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+        GpuBenchmarkSample sample{local, global, static_cast<std::uint64_t>(global) * repeats,
+                                  hashes, seconds, seconds > 0.0 ? static_cast<double>(hashes) / seconds : 0.0};
+        result.samples.push_back(sample);
+        if (sample.hash_rate > result.best.hash_rate) result.best = sample;
+      }
+      if (result.samples.empty()) throw std::runtime_error("no valid OpenCL benchmark configuration");
+      release_all();
+      return result;
+    } catch (...) {
+      release_all();
+      throw;
+    }
+  }
+
   void run(std::stop_token token, LiveMiningJob job, bool auto_tune) {
     auto unit = allocator.acquire(WorkerKind::Gpu);
     if (!unit) return;
     try {
       cl_int error = CL_SUCCESS;
       cl_context context = clCreateContext(nullptr, 1, &device_id, nullptr, nullptr, &error); check(error, "clCreateContext");
+      // OpenCL 1.2 remains the compatibility baseline for the deployed AMD runtime.
       cl_command_queue queue = clCreateCommandQueue(context, device_id, CL_QUEUE_PROFILING_ENABLE, &error); check(error, "clCreateCommandQueue");
       const auto source = read_kernel();
       const char* source_pointer = source.c_str();
@@ -137,8 +357,10 @@ struct GpuMiner::Impl {
       std::size_t global_size = 1U << 20U;
       std::uint64_t batch_size = 1U << 24U;
       bool profile_matches = false;
-      const auto profile = checkpoint::StateStore(profile_path).load_or(nlohmann::json::object());
-      if (profile.value("device_name", "") == info.name && profile.value("driver", "") == info.driver && profile.value("tuned", false)) {
+      const auto profile_document = checkpoint::StateStore(profile_path).load_or(nlohmann::json::object());
+      const auto profile = profile_document.contains("gpu") ? profile_document.at("gpu") : profile_document;
+      const auto profile_name = profile.value("device_name", profile.value("name", ""));
+      if (profile_name == info.name && profile.value("driver", "") == info.driver && profile.value("tuned", false)) {
         local_size = profile.value("local_work_size", local_size);
         global_size = profile.value("global_work_size", global_size);
         batch_size = profile.value("batch_size", batch_size);
@@ -210,7 +432,8 @@ struct GpuMiner::Impl {
           check(clEnqueueReadBuffer(queue, count_buffer, CL_TRUE, 0, sizeof(candidate_count), &candidate_count, 0, nullptr, nullptr), "candidate count read");
           if (candidate_count > 0) {
             check(clEnqueueReadBuffer(queue, candidates_buffer, CL_TRUE, 0, sizeof(candidate_nonces), candidate_nonces.data(), 0, nullptr, nullptr), "candidate read");
-            for (std::uint32_t i = 0; i < std::min<std::uint32_t>(candidate_count, candidate_nonces.size()); ++i) {
+            const auto bounded_candidates = std::min(candidate_count, static_cast<std::uint32_t>(candidate_nonces.size()));
+            for (std::uint32_t i = 0; i < bounded_candidates; ++i) {
               auto header = built.header;
               bitcoin::set_nonce(header, candidate_nonces[i]);
               const auto digest = crypto::sha256d(header);
@@ -251,20 +474,135 @@ GpuMiner::GpuMiner(WorkAllocator& allocator,
 
 GpuMiner::~GpuMiner() { stop(); }
 
-GpuInfo GpuMiner::detect() {
+std::size_t GpuMiner::select_device_index(const std::vector<GpuInfo>& devices,
+                                          const std::string& platform_selector,
+                                          const std::string& device_selector) {
+  if (devices.empty()) throw std::runtime_error("no OpenCL GPU detected");
+  std::vector<std::size_t> candidates(devices.size());
+  for (std::size_t index = 0; index < devices.size(); ++index) candidates[index] = index;
+
+  if (!is_auto(platform_selector)) {
+    const auto wanted = normalized(platform_selector);
+    if (wanted.starts_with("index:")) {
+      const auto requested = static_cast<std::size_t>(std::stoull(wanted.substr(6)));
+      candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [&](const std::size_t index) {
+        return devices[index].platform_index != requested;
+      }), candidates.end());
+      if (candidates.empty()) throw std::invalid_argument("OpenCL platform index matches no platform: " + platform_selector);
+    } else {
+      auto filter_platform = [&](const bool exact) {
+        std::vector<std::size_t> matches;
+        for (const auto index : candidates) {
+          const auto platform = normalized(devices[index].platform);
+          if ((exact && platform == wanted) ||
+              (!exact && platform.find(wanted) != std::string::npos)) {
+            matches.push_back(index);
+          }
+        }
+        return matches;
+      };
+      auto matches = filter_platform(true);
+      if (matches.empty()) matches = filter_platform(false);
+      if (matches.empty()) {
+        throw std::invalid_argument("OpenCL platform selector matches no platform: " +
+                                    platform_selector);
+      }
+      std::set<std::size_t> platform_indices;
+      for (const auto index : matches) platform_indices.insert(devices[index].platform_index);
+      if (platform_indices.size() > 1) {
+        throw std::invalid_argument("ambiguous OpenCL platform selector: " + platform_selector);
+      }
+      candidates = std::move(matches);
+    }
+  }
+
+  if (!is_auto(device_selector)) {
+    const auto wanted = normalized(device_selector);
+    if (wanted.starts_with("index:")) {
+      const auto requested = static_cast<std::size_t>(std::stoull(wanted.substr(6)));
+      const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const std::size_t index) {
+        return devices[index].index == requested;
+      });
+      if (found == candidates.end()) throw std::invalid_argument("OpenCL GPU index matches no device: " + device_selector);
+      return *found;
+    }
+    auto filter_device = [&](const bool exact) {
+      std::vector<std::size_t> matches;
+      for (const auto index : candidates) {
+        const auto name = normalized(devices[index].name);
+        const auto board = normalized(devices[index].board_name);
+        if ((exact && (name == wanted || board == wanted)) ||
+            (!exact && (name.find(wanted) != std::string::npos || board.find(wanted) != std::string::npos))) {
+          matches.push_back(index);
+        }
+      }
+      return matches;
+    };
+    auto matches = filter_device(true);
+    if (matches.empty()) matches = filter_device(false);
+    if (matches.empty()) throw std::invalid_argument("OpenCL device selector matches no GPU: " + device_selector);
+    if (matches.size() > 1) throw std::invalid_argument("ambiguous OpenCL device selector: " + device_selector);
+    return matches.front();
+  }
+
+  return *std::max_element(candidates.begin(), candidates.end(), [&](const std::size_t left, const std::size_t right) {
+    const auto& a = devices[left];
+    const auto& b = devices[right];
+    return std::tuple{is_amd(a), a.compute_units, a.global_memory, a.max_workgroup_size} <
+           std::tuple{is_amd(b), b.compute_units, b.global_memory, b.max_workgroup_size};
+  });
+}
+
+std::vector<GpuInfo> GpuMiner::enumerate() const {
 #ifdef SRM_HAS_OPENCL
-  try { impl_->info = impl_->detect_opencl(); }
+  try {
+    const auto choices = impl_->enumerate_opencl();
+    std::vector<GpuInfo> devices;
+    devices.reserve(choices.size());
+    for (const auto& choice : choices) devices.push_back(choice.info);
+    return devices;
+  }
   catch (const std::exception& error) { impl_->telemetry.event(std::string("[GPU] détection OpenCL échouée: ") + error.what()); impl_->info = {}; }
 #else
+  impl_->telemetry.event("[GPU] OpenCL absent à la compilation; poursuite CPU");
+#endif
+  return {};
+}
+
+GpuInfo GpuMiner::detect(const std::string& platform_selector, const std::string& device_selector) {
+#ifdef SRM_HAS_OPENCL
+  try { impl_->info = impl_->detect_opencl(platform_selector, device_selector); }
+  catch (const std::exception& error) { impl_->telemetry.event(std::string("[GPU] détection OpenCL échouée: ") + error.what()); impl_->info = {}; }
+#else
+  (void)platform_selector;
+  (void)device_selector;
   impl_->telemetry.event("[GPU] OpenCL absent à la compilation; poursuite CPU");
   impl_->info = {};
 #endif
   return impl_->info;
 }
 
+GpuBenchmarkResult GpuMiner::benchmark(const bitcoin::Header& header,
+                                       const std::string& platform_selector,
+                                       const std::string& device_selector,
+                                       const bool auto_tune,
+                                       const unsigned warmup_ms,
+                                       const unsigned measurement_ms) {
+#ifdef SRM_HAS_OPENCL
+  return impl_->benchmark_opencl(header, platform_selector, device_selector, auto_tune, warmup_ms, measurement_ms);
+#else
+  (void)header;
+  (void)platform_selector;
+  (void)device_selector;
+  (void)auto_tune;
+  (void)warmup_ms;
+  (void)measurement_ms;
+  throw std::runtime_error("benchmark GPU unavailable: OpenCL support was not compiled");
+#endif
+}
+
 void GpuMiner::start(const LiveMiningJob& job, const bool auto_tune) {
   stop();
-  if (!impl_->info.available) detect();
 #ifdef SRM_HAS_OPENCL
   if (impl_->info.available) impl_->thread = std::jthread([this, job, auto_tune](const std::stop_token token) { impl_->run(token, job, auto_tune); });
 #else

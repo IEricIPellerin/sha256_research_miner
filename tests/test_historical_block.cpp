@@ -10,4 +10,3 @@ TEST_CASE("Genesis known nonce satisfies compact network target") {
   std::copy(bytes.begin(), bytes.end(), header.begin());
   REQUIRE(srm::bitcoin::hash_meets_target(srm::crypto::sha256d(header), srm::bitcoin::target_from_nbits("1d00ffff")));
 }
-

@@ -20,4 +20,3 @@ TEST_CASE("reduced SHA-256 N=64 equals reference") {
   const auto bytes = srm::crypto::from_hex("00010203040506070809");
   REQUIRE_EQ(srm::crypto::reduced_sha256(bytes, 64), srm::crypto::sha256(bytes));
 }
-

@@ -33,4 +33,3 @@ struct Solution {
 };
 
 }  // namespace srm::mining
-

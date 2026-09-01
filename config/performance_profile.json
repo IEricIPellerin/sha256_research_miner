@@ -1,9 +1,9 @@
 {
   "combined_hash_rate_hps": null,
   "cpu": {
-    "best_threads": 32,
+    "best_threads": 29,
     "enabled": true,
-    "hash_rate_hps": 30726420.200309735
+    "hash_rate_hps": 30251254.647977166
   },
   "gpu": {
     "batch_size": 1048576,
@@ -14,7 +14,7 @@
     "enabled": true,
     "global_memory_bytes": 25753026560,
     "global_work_size": 1048576,
-    "hash_rate_hps": 1532959399.6549933,
+    "hash_rate_hps": 1501589035.117435,
     "index": 0,
     "local_work_size": 64,
     "max_work_group_size": 256,
@@ -22,9 +22,9 @@
     "tuned": true,
     "vendor": "Advanced Micro Devices, Inc."
   },
-  "measurement_ms": 1000,
+  "measurement_ms": 5000,
   "mode": "benchmark",
   "schema_version": 1,
-  "timestamp_utc": "2026-09-01T01:00:30.671Z",
-  "warmup_ms": 250
+  "timestamp_utc": "2026-09-01T01:08:14.607Z",
+  "warmup_ms": 500
 }

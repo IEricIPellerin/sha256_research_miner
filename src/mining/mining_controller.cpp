@@ -40,6 +40,7 @@ std::string reverse_hex(std::span<const std::uint8_t> bytes) {
 
 std::string allocator_state_name(const config::Mode mode) {
   if (mode == config::Mode::Live) return "live_state.json";
+  if (mode == config::Mode::HistoricalTest) return "historical_state.json";
   if (mode == config::Mode::MockStratum) return "mock_state.json";
   if (mode == config::Mode::Benchmark) return "benchmark_state.json";
   return "research_state.json";
@@ -382,7 +383,7 @@ struct MiningController::Impl {
     std::copy(bytes.begin(), bytes.end(), header.begin());
     bitcoin::set_nonce(header, 0);
     const auto header_id = crypto::digest_hex(crypto::sha256(std::span<const std::uint8_t>(header.data(), 76)));
-    checkpoint::StateStore state_store(config.project_root / "state" / "research_state.json");
+    checkpoint::StateStore state_store(config.project_root / "state" / allocator_state_name(config.mode));
     auto state = state_store.load_or(nlohmann::json::object());
     if (state.value("header_id", "") != header_id) state = nlohmann::json::object();
     std::vector<unsigned> completed = state.value("completed_rounds", std::vector<unsigned>{});

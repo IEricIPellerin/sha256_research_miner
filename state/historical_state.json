@@ -86,122 +86,26 @@
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236893,
       "nonce_start": 2083236886
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236900,
-      "nonce_start": 2083236893
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236906,
-      "nonce_start": 2083236900
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236913,
-      "nonce_start": 2083236906
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236920,
-      "nonce_start": 2083236913
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236926,
-      "nonce_start": 2083236920
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236933,
-      "nonce_start": 2083236926
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236940,
-      "nonce_start": 2083236933
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236946,
-      "nonce_start": 2083236940
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236953,
-      "nonce_start": 2083236946
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236960,
-      "nonce_start": 2083236953
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236966,
-      "nonce_start": 2083236960
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236973,
-      "nonce_start": 2083236966
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236980,
-      "nonce_start": 2083236973
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236986,
-      "nonce_start": 2083236980
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083236993,
-      "nonce_start": 2083236986
-    },
-    {
-      "extranonce2": "",
-      "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
-      "nonce_end": 2083237000,
-      "nonce_start": 2083236993
     }
   ],
   "counters": {
     "accepted": 0,
-    "cpu_hashes": 200,
+    "cpu_hashes": 94,
     "gpu_hashes": 0,
-    "hashes": 200,
+    "hashes": 94,
     "headers_complete": 0,
     "rejected": 0,
     "shares": 0,
     "stale_jobs": 0
   },
   "current_round": 64,
-  "hashes_tested": 200,
+  "hashes_tested": 94,
   "header_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
   "mode": "historical_test",
   "nonce_end": 2083237000,
   "nonce_start": 2083236800,
   "schema_version": 1,
-  "uptime_ms": 226,
+  "uptime_ms": 116,
   "work_units": [
     {
       "best_hash": "",
@@ -418,14 +322,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 1,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-14",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236900,
-      "nonce_next": 2083236900,
+      "nonce_next": 2083236894,
       "nonce_start": 2083236893,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -433,14 +337,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 6,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-15",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236906,
-      "nonce_next": 2083236906,
+      "nonce_next": 2083236900,
       "nonce_start": 2083236900,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -448,14 +352,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-16",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236913,
-      "nonce_next": 2083236913,
+      "nonce_next": 2083236906,
       "nonce_start": 2083236906,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -463,14 +367,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-17",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236920,
-      "nonce_next": 2083236920,
+      "nonce_next": 2083236913,
       "nonce_start": 2083236913,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -478,14 +382,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 6,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-18",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236926,
-      "nonce_next": 2083236926,
+      "nonce_next": 2083236920,
       "nonce_start": 2083236920,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -493,14 +397,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-19",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236933,
-      "nonce_next": 2083236933,
+      "nonce_next": 2083236926,
       "nonce_start": 2083236926,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -508,14 +412,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-20",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236940,
-      "nonce_next": 2083236940,
+      "nonce_next": 2083236933,
       "nonce_start": 2083236933,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -523,14 +427,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 6,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-21",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236946,
-      "nonce_next": 2083236946,
+      "nonce_next": 2083236940,
       "nonce_start": 2083236940,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -538,14 +442,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-22",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236953,
-      "nonce_next": 2083236953,
+      "nonce_next": 2083236946,
       "nonce_start": 2083236946,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -553,14 +457,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-23",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236960,
-      "nonce_next": 2083236960,
+      "nonce_next": 2083236953,
       "nonce_start": 2083236953,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -568,14 +472,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 6,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-24",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236966,
-      "nonce_next": 2083236966,
+      "nonce_next": 2083236960,
       "nonce_start": 2083236960,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -583,14 +487,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-25",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236973,
-      "nonce_next": 2083236973,
+      "nonce_next": 2083236966,
       "nonce_start": 2083236966,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -598,14 +502,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-26",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236980,
-      "nonce_next": 2083236980,
+      "nonce_next": 2083236973,
       "nonce_start": 2083236973,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -613,14 +517,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 6,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-27",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236986,
-      "nonce_next": 2083236986,
+      "nonce_next": 2083236980,
       "nonce_start": 2083236980,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -628,14 +532,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-28",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083236993,
-      "nonce_next": 2083236993,
+      "nonce_next": 2083236986,
       "nonce_start": 2083236986,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     },
     {
@@ -643,14 +547,14 @@
       "best_nonce": null,
       "extranonce2": "",
       "generation": 64,
-      "hashes_tested": 7,
+      "hashes_tested": 0,
       "id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf-r64-cpu-29",
       "job_id": "f5e9158f961c3780a0ddb0aeec5b6e525468a2bd7f464db5cbf87ae0cc9d8cdf",
       "nonce_end": 2083237000,
-      "nonce_next": 2083237000,
+      "nonce_next": 2083236993,
       "nonce_start": 2083236993,
       "prevhash": "",
-      "status": "COMPLETE",
+      "status": "PENDING",
       "worker": "CPU"
     }
   ]

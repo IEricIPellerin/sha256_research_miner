@@ -3,12 +3,12 @@
   "ckpool": {
     "host": "stratum.ckpool.org",
     "port": 3333,
-    "username": "CHANGE_ME",
+    "username": "bc1qwe0c3slz05xll89mh8tl3xqylx8aphhtdtru5z",
     "password": "x",
     "reconnect": true,
     "reconnect_delay_ms": 2000
   },
-  "cpu": { "enabled": true, "threads": 30 },
+  "cpu": { "enabled": true, "threads": 29 },
   "gpu": {
     "enabled": true,
     "platform": "auto",

@@ -55,15 +55,64 @@ int main(int argc, char** argv) {
         send(socket, {{"id", nullptr}, {"method", "mining.set_difficulty"}, {"params", nlohmann::json::array({1e-20})}});
         notify(socket, "mock-job-1", true);
       } else if (method == "mining.submit") {
-        if (!subscribed || !authorized) throw std::runtime_error("submit before handshake");
-        if (request.at("params").at(1).get<std::string>() != active_job) {
-          send(socket, {{"id", request.at("id")}, {"error", nlohmann::json::array({21, "Stale", nullptr})}, {"result", false}});
+        if (!subscribed || !authorized) {
+          throw std::runtime_error("submit before handshake");
+        }
+
+        const auto& params = request.at("params");
+
+        if (!params.is_array() || params.size() != 5) {
+          throw std::runtime_error("mining.submit must contain exactly five parameters");
+        }
+
+        const auto username = params.at(0).get<std::string>();
+        const auto job_id = params.at(1).get<std::string>();
+        const auto extranonce2 = params.at(2).get<std::string>();
+        const auto ntime = params.at(3).get<std::string>();
+        const auto nonce = params.at(4).get<std::string>();
+
+        if (username.empty()) {
+          throw std::runtime_error("mining.submit username is empty");
+        }
+
+        if (job_id != active_job) {
+          send(socket, {
+              {"id", request.at("id")},
+              {"error", nlohmann::json::array({21, "Stale", nullptr})},
+              {"result", false}
+          });
           continue;
         }
-        send(socket, {{"id", request.at("id")}, {"error", nullptr}, {"result", true}});
+
+        if (extranonce2.size() != 8) {
+          throw std::runtime_error("mining.submit extranonce2 must contain exactly four bytes");
+        }
+
+        if (ntime != "65000000") {
+          throw std::runtime_error("mining.submit ntime does not match the active job");
+        }
+
+        if (nonce.size() != 8) {
+          throw std::runtime_error("mining.submit nonce must contain exactly four bytes");
+        }
+
+        send(socket, {
+            {"id", request.at("id")},
+            {"error", nullptr},
+            {"result", true}
+        });
+
         ++submits;
-        std::cout << "accepted mock submit " << submits << std::endl;
-        if (submits == 1) { active_job = "mock-job-2"; notify(socket, active_job, true); }
+        std::cout << "accepted mock submit " << submits
+                  << " extranonce2=" << extranonce2
+                  << " ntime=" << ntime
+                  << " nonce=" << nonce
+                  << std::endl;
+
+        if (submits == 1) {
+          active_job = "mock-job-2";
+          notify(socket, active_job, true);
+        }
       }
     }
     return 0;

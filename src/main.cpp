@@ -1,6 +1,7 @@
 //src\main.cpp
 #include "config/config.h"
 #include "mining/mining_controller.h"
+#include "platform/windows_utf8.h"
 
 #include <atomic>
 #include <csignal>
@@ -8,21 +9,13 @@
 #include <iostream>
 #include <string>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 namespace {
 std::atomic_bool interrupted{false};
 void handle_signal(int) { interrupted.store(true, std::memory_order_release); }
 }
 
 int main(int argc, char** argv) {
-
-  #ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-  #endif
+  srm::platform::configure_utf8_console();
 
   try {
     std::filesystem::path config_path = "config/miner.json";

@@ -35,10 +35,6 @@
 namespace srm::mining {
 namespace {
 
-std::string hex_nonce_bytes(const bitcoin::Header& header) {
-  return crypto::to_hex(std::span<const std::uint8_t>(header.data() + 76, 4));
-}
-
 std::string reverse_hex(std::span<const std::uint8_t> bytes) {
   std::vector<std::uint8_t> reversed(bytes.rbegin(), bytes.rend());
   return crypto::to_hex(reversed);
@@ -564,7 +560,7 @@ nlohmann::json research_trajectory_json(
       {"header_hex", bitcoin::header_hex(record.header)},
       {"nonce_hex", sha256_word_hex(record.nonce)},
       {"nonce_header_bytes", std::move(header_bytes)},
-      {"nonce_header_bytes_hex", hex_nonce_bytes(record.header)},
+      {"nonce_header_bytes_hex", bitcoin::nonce_header_le_hex(record.header)},
       {"sha1_compression1_w3", sha256_word_hex(w3)},
       {"sha1_compression1_w3_reference", sha256_word_hex(reference_w3)},
       {"single_bit_w3_changes", std::move(w3_changes)},
@@ -899,7 +895,8 @@ struct MiningController::Impl {
 
   explicit Impl(config::AppConfig value)
       : config(std::move(value)), telemetry(config.console.refresh_ms),
-        logger(config.logging.directory, config.logging.save_session_log, config.logging.save_block_candidates),
+        logger(config.logging.directory, config.logging.save_session_log,
+               config.logging.save_block_candidates, config.logging.save_share_audits),
         allocator(checkpoint::StateStore(config.project_root / "state" / allocator_state_name(config.mode)),
                   config::mode_name(config.mode)) {
     const auto saved = allocator.snapshot();
@@ -933,22 +930,42 @@ struct MiningController::Impl {
             std::chrono::steady_clock::now() - started).count())}};
   }
 
+  void safe_checkpoint(const std::string& context) {
+    try {
+      allocator.checkpoint(counters_json());
+    } catch (const checkpoint::PersistenceError& error) {
+      event("[CHECKPOINT] " + context + ": " + error.what());
+    }
+  }
+
   Solution make_solution(const Candidate& candidate) {
+    if (bitcoin::get_nonce(candidate.header) != candidate.nonce) {
+      throw std::logic_error("candidate nonce differs from serialized header nonce");
+    }
     Solution solution;
     solution.job_id = candidate.context.job.job_id;
     solution.username = config.ckpool.username;
     solution.extranonce1 = candidate.context.extranonce1;
     solution.extranonce2 = candidate.extranonce2;
+    solution.extranonce2_size = candidate.context.extranonce2_size;
+    solution.clean_jobs = candidate.context.job.clean_jobs;
+    solution.coinbase1 = candidate.context.job.coinbase1;
+    solution.coinbase2 = candidate.context.job.coinbase2;
+    solution.merkle_branches = candidate.context.job.merkle_branches;
+    solution.work_fingerprint = candidate.context.work_fingerprint;
     solution.version = candidate.context.job.version;
     solution.prevhash = candidate.context.job.prevhash;
     solution.merkle_root = crypto::bitcoin_hash_hex(candidate.merkle_root);
     solution.ntime = candidate.context.job.ntime;
     solution.nbits = candidate.context.job.nbits;
-    solution.nonce = hex_nonce_bytes(candidate.header);
+    solution.nonce_value = candidate.nonce;
+    solution.nonce = bitcoin::stratum_nonce_hex(candidate.nonce);
+    solution.nonce_header_le = bitcoin::nonce_header_le_hex(candidate.header);
     solution.header_hex = bitcoin::header_hex(candidate.header);
     solution.hash = crypto::bitcoin_hash_hex(candidate.digest);
     solution.network_target = bitcoin::target_hex(candidate.context.network_target);
     solution.share_target = bitcoin::target_hex(candidate.context.share_target);
+    solution.share_difficulty = candidate.context.share_difficulty;
     solution.detected_timestamp_utc = logging::ResultLogger::utc_now();
     solution.network_candidate = candidate.network_candidate;
     return solution;
@@ -961,28 +978,70 @@ struct MiningController::Impl {
     auto solution = make_solution(candidate);
     telemetry.shares.fetch_add(1, std::memory_order_relaxed);
     telemetry.observe_best(solution.hash);
-    event("[SHARE] trouvée hash=" + solution.hash + " nonce=" + solution.nonce);
+    event("[SHARE] trouvée hash=" + solution.hash + " nonce_stratum=" + solution.nonce +
+          " nonce_header_le=" + solution.nonce_header_le);
     if (solution.network_candidate) {
       event("[BLOCK] candidat réseau détecté");
-      solution.submitted_timestamp_utc = logging::ResultLogger::utc_now();
-      logger.save_candidate(solution);  // durable before any network submission
-      event("[BLOCK] soumission immédiate");
-    } else {
-      solution.submitted_timestamp_utc = logging::ResultLogger::utc_now();
     }
 
-    if (!client || !client->connected() || !client->authorized()) {
-      event("[SHARE] non soumise: connexion CKPool inactive");
-      if (solution.network_candidate) logger.update_candidate(solution);
+    const bool can_submit = client && client->connected() && client->authorized();
+    if (can_submit) {
+      solution.submitted_timestamp_utc = logging::ResultLogger::utc_now();
+      solution.submission_status = "pending";
+    } else {
+      solution.submission_status = "not_submitted";
+      solution.local_submission_error = "CKPool connection inactive";
+    }
+
+    try {
+      logger.save_share_audit(solution);  // durable before any network submission
+      if (solution.network_candidate) {
+        logger.save_candidate(solution);  // preserves the dedicated block-candidate artifact
+      }
+    } catch (const checkpoint::PersistenceError& error) {
+      solution.submission_status = "local_error";
+      solution.local_submission_error = std::string("durable pre-submit save failed: ") + error.what();
+      try { logger.update_share_audit(solution); } catch (const checkpoint::PersistenceError&) {}
+      try { logger.update_candidate(solution); } catch (const checkpoint::PersistenceError&) {}
+      event("[SHARE] soumission annulée: sauvegarde durable impossible: " + std::string(error.what()));
       return;
     }
+
+    if (!can_submit) {
+      event("[SHARE] non soumise: connexion CKPool inactive");
+      return;
+    }
+    if (solution.network_candidate) event("[BLOCK] soumission immédiate");
+
     try {
       std::scoped_lock lock(submissions_mutex);
       const auto id = client->submit(solution.username, solution.job_id, solution.extranonce2, solution.ntime, solution.nonce);
-      pending_submissions.emplace(id, std::move(solution));
+      solution.submission_id = id;
+      const auto [item, inserted] = pending_submissions.emplace(id, std::move(solution));
+      if (!inserted) throw std::logic_error("duplicate Stratum submission id");
+      try { logger.update_share_audit(item->second); }
+      catch (const checkpoint::PersistenceError& error) {
+        event("[SHARE] audit non mis à jour après envoi: " + std::string(error.what()));
+      }
+      if (item->second.network_candidate) {
+        try { logger.update_candidate(item->second); }
+        catch (const checkpoint::PersistenceError& error) {
+          event("[BLOCK] candidat non mis à jour après envoi: " + std::string(error.what()));
+        }
+      }
     } catch (const std::exception& error) {
-      solution.server_response = std::string("local submission error: ") + error.what();
-      if (solution.network_candidate) logger.update_candidate(solution);
+      solution.submission_status = "local_error";
+      solution.local_submission_error = std::string("local submission error: ") + error.what();
+      try { logger.update_share_audit(solution); }
+      catch (const checkpoint::PersistenceError& persistence_error) {
+        event("[SHARE] audit d'erreur non sauvegardé: " + std::string(persistence_error.what()));
+      }
+      if (solution.network_candidate) {
+        try { logger.update_candidate(solution); }
+        catch (const checkpoint::PersistenceError& persistence_error) {
+          event("[BLOCK] erreur locale non sauvegardée: " + std::string(persistence_error.what()));
+        }
+      }
       event("[SHARE] erreur de soumission: " + std::string(error.what()));
     }
   }
@@ -1023,9 +1082,10 @@ struct MiningController::Impl {
             config.cpu.enabled ? config.cpu.threads : 1U,
             config.gpu.enabled,
             generation);
-    event(resumed ? "[CHECKPOINT] travail CKPool compatible repris" : "[CHECKPOINT] nouveau travail; ancien état incompatible marqué STALE");
+    event(resumed ? "[CHECKPOINT] travail CKPool compatible repris" : "[CHECKPOINT] nouveau travail; ancien état live incompatible compacté");
     const LiveMiningJob mining_job{job, extranonce1, bitcoin::share_target_from_difficulty(share_difficulty),
-                                   bitcoin::target_from_nbits(job.nbits), generation};
+                                   bitcoin::target_from_nbits(job.nbits), share_difficulty,
+                                   extranonce2_size, work_fingerprint, generation};
     telemetry.set_job(job.job_id, job.prevhash, job.clean_jobs, share_difficulty, bitcoin::target_hex(mining_job.network_target));
 
     std::string cpu_ex2;
@@ -1043,7 +1103,7 @@ struct MiningController::Impl {
     telemetry.set_worker_state(config.cpu.enabled ? config.cpu.threads : 0, cpu_ex2, gpu_name, gpu_ex2);
     if (config.cpu.enabled) cpu->start(mining_job, config.cpu.threads);
     if (config.gpu.enabled) gpu->start(mining_job, config.gpu.auto_tune);
-    allocator.checkpoint(counters_json());
+    safe_checkpoint("sauvegarde au lancement du job impossible");
   }
 
   void on_job(const stratum::StratumJob& job) {
@@ -1083,9 +1143,21 @@ struct MiningController::Impl {
       if (accepted) { telemetry.accepted.fetch_add(1); event("[SHARE] acceptée id=" + std::to_string(id)); }
       else { telemetry.rejected.fetch_add(1); event("[SHARE] rejetée id=" + std::to_string(id) + " réponse=" + response.dump()); }
       if (found) {
+        solution.response_timestamp_utc = logging::ResultLogger::utc_now();
+        solution.submission_status = accepted ? "accepted" : "rejected";
+        solution.accepted = accepted;
         solution.submission_latency_us = latency;
-        solution.server_response = response.dump();
-        if (solution.network_candidate) logger.update_candidate(solution);
+        solution.server_response = response;
+        try { logger.update_share_audit(solution); }
+        catch (const checkpoint::PersistenceError& error) {
+          event("[SHARE] réponse non sauvegardée dans l'audit: " + std::string(error.what()));
+        }
+        if (solution.network_candidate) {
+          try { logger.update_candidate(solution); }
+          catch (const checkpoint::PersistenceError& error) {
+            event("[BLOCK] réponse non sauvegardée: " + std::string(error.what()));
+          }
+        }
       }
     };
     callbacks.disconnected = [this]() {
@@ -1094,7 +1166,7 @@ struct MiningController::Impl {
       stop_workers();
       authorized = false; subscribed = false;
       telemetry.set_connection(false, false, config.ckpool.host + ":" + std::to_string(config.ckpool.port));
-      try { allocator.checkpoint(counters_json()); } catch (const std::exception& error) { event(std::string("[CHECKPOINT] erreur: ") + error.what()); }
+      safe_checkpoint("sauvegarde à la déconnexion impossible");
     };
 
     client = std::make_unique<stratum::StratumClient>(config.ckpool, std::move(callbacks));
@@ -1105,15 +1177,14 @@ struct MiningController::Impl {
     while (!stop_requested.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (std::chrono::steady_clock::now() >= next_checkpoint) {
-        try { allocator.checkpoint(counters_json()); }
-        catch (const std::exception& error) { event(std::string("[CHECKPOINT] disque non accessible: ") + error.what()); }
+        safe_checkpoint("sauvegarde périodique impossible");
         next_checkpoint = std::chrono::steady_clock::now() + std::chrono::milliseconds(config.checkpoint_interval_ms);
       }
     }
     active_generation.fetch_add(1);
     stop_workers();
     client->stop();
-    allocator.checkpoint(counters_json());
+    safe_checkpoint("sauvegarde finale impossible");
     telemetry.stop();
     return 0;
   }
@@ -1128,7 +1199,9 @@ struct MiningController::Impl {
     value.merkle_root = reverse_hex(std::span<const std::uint8_t>(header.data() + 36, 32));
     value.ntime = reverse_hex(std::span<const std::uint8_t>(header.data() + 68, 4));
     value.nbits = reverse_hex(std::span<const std::uint8_t>(header.data() + 72, 4));
-    value.nonce = hex_nonce_bytes(header);
+    value.nonce_value = bitcoin::get_nonce(header);
+    value.nonce = bitcoin::stratum_nonce_hex(value.nonce_value);
+    value.nonce_header_le = bitcoin::nonce_header_le_hex(header);
     value.header_hex = bitcoin::header_hex(header);
     value.hash = crypto::bitcoin_hash_hex(digest);
     value.network_target = bitcoin::target_hex(target);
@@ -1136,6 +1209,7 @@ struct MiningController::Impl {
     value.detected_timestamp_utc = logging::ResultLogger::utc_now();
     value.network_candidate = true;
     value.offline = true;
+    value.submission_status = "offline";
     return value;
   }
 

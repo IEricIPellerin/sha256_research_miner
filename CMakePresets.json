@@ -49,6 +49,14 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "windows-cpu-only",
+      "configurePreset": "windows-cpu-only",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

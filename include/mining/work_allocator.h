@@ -82,6 +82,7 @@ class WorkAllocator {
 
   checkpoint::StateStore store_;
   std::string mode_;
+  mutable std::mutex checkpoint_mutex_;
   mutable std::mutex mutex_;
   std::vector<WorkUnit> units_;
   nlohmann::json metadata_;

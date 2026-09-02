@@ -102,6 +102,7 @@ bool WorkAllocator::prepare_live_job(const std::string& job_id,
                                      const bool gpu_enabled,
                                      const std::uint64_t generation) {
   std::scoped_lock lock(mutex_);
+  const bool compact_live_state = mode_ == "live" || mode_ == "mock_stratum";
 
   const bool compatible =
       metadata_.value("last_job_id", "") == job_id &&
@@ -114,9 +115,13 @@ bool WorkAllocator::prepare_live_job(const std::string& job_id,
       });
 
   if (!compatible) {
-    for (auto& unit : units_) {
-      if (unit.status != WorkStatus::Complete) {
-        unit.status = WorkStatus::Stale;
+    if (compact_live_state) {
+      // A live checkpoint is restart state for one fingerprint, not a job history.
+      // Cumulative counters live in metadata_ and therefore survive this compaction.
+      units_.clear();
+    } else {
+      for (auto& unit : units_) {
+        if (unit.status != WorkStatus::Complete) unit.status = WorkStatus::Stale;
       }
     }
 
@@ -128,6 +133,17 @@ bool WorkAllocator::prepare_live_job(const std::string& job_id,
         gpu_enabled,
         generation);
   } else {
+    if (compact_live_state) {
+      units_.erase(
+          std::remove_if(
+              units_.begin(), units_.end(),
+              [&](const WorkUnit& unit) {
+                return unit.status == WorkStatus::Stale || unit.job_id != job_id ||
+                       unit.prevhash != prevhash ||
+                       (extranonce2_size > 0 && unit.status == WorkStatus::Complete);
+              }),
+          units_.end());
+    }
     for (auto& unit : units_) {
       if (unit.status == WorkStatus::InProgress) {
         unit.status = WorkStatus::Pending;
@@ -331,6 +347,13 @@ void WorkAllocator::complete(const std::string& id) {
                           metadata_.value("cpu_workers", 1U), generation, counter++);
         metadata_["next_extranonce2_counter"] = counter;
       }
+      units_.erase(
+          std::remove_if(
+              units_.begin(), units_.end(),
+              [](const WorkUnit& candidate) {
+                return candidate.status == WorkStatus::Complete;
+              }),
+          units_.end());
     }
     return;
   }
@@ -389,6 +412,7 @@ nlohmann::json WorkAllocator::snapshot() const {
 }
 
 void WorkAllocator::checkpoint(const nlohmann::json& extra) const {
+  std::scoped_lock checkpoint_lock(checkpoint_mutex_);
   auto state = snapshot();
   state.update(extra, true);
   store_.save(state);

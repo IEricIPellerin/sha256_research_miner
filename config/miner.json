@@ -23,7 +23,8 @@
   "logging": {
     "directory": "results",
     "save_session_log": true,
-    "save_block_candidates": true
+    "save_block_candidates": true,
+    "save_share_audits": true
   },
   "checkpoint": { "interval_ms": 2000 }
 }

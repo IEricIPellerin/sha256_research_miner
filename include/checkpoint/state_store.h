@@ -3,8 +3,14 @@
 
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 
 namespace srm::checkpoint {
+
+class PersistenceError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
 
 class StateStore {
  public:

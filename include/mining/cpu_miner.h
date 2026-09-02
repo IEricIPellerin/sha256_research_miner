@@ -20,6 +20,9 @@ struct LiveMiningJob {
   std::string extranonce1;
   bitcoin::Target256 share_target;
   bitcoin::Target256 network_target;
+  double share_difficulty{0.0};
+  unsigned extranonce2_size{0};
+  std::string work_fingerprint;
   std::uint64_t generation{0};
 };
 

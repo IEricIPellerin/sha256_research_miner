@@ -72,6 +72,7 @@ AppConfig load(const std::filesystem::path& path) {
     config.logging.directory = config.project_root / directory;
     assign_if(item, "save_session_log", config.logging.save_session_log);
     assign_if(item, "save_block_candidates", config.logging.save_block_candidates);
+    assign_if(item, "save_share_audits", config.logging.save_share_audits);
   } else {
     config.logging.directory = config.project_root / config.logging.directory;
   }

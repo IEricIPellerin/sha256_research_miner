@@ -1,6 +1,7 @@
 //src\stratum\stratum_client.cpp
 #include "stratum/stratum_client.h"
 
+#include "platform/windows_utf8.h"
 #include "stratum/stratum_message.h"
 
 #include <asio.hpp>
@@ -12,6 +13,18 @@
 #include <thread>
 
 namespace srm::stratum {
+namespace {
+
+std::string asio_error_utf8(const asio::error_code& error) {
+#ifdef _WIN32
+  if (error.category() == asio::error::get_system_category()) {
+    return platform::windows_error_message_utf8(error.value());
+  }
+#endif
+  return error.message();
+}
+
+}  // namespace
 
 struct StratumClient::Impl {
   config::CkpoolConfig config;
@@ -35,7 +48,13 @@ struct StratumClient::Impl {
     const auto line = message.dump() + "\n";
     std::scoped_lock lock(write_mutex);
     if (!socket || !socket->is_open()) throw std::runtime_error("Stratum socket is not connected");
-    asio::write(*socket, asio::buffer(line));
+    try {
+      asio::write(*socket, asio::buffer(line));
+    } catch (const asio::system_error& error) {
+      throw std::runtime_error(
+          "Stratum write failed (code " + std::to_string(error.code().value()) + "): " +
+          asio_error_utf8(error.code()));
+    }
   }
 
   void handle(const StratumMessage& message) {
@@ -81,7 +100,9 @@ struct StratumClient::Impl {
       }
       const auto latency = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
       const bool accepted = message.error.is_null() && message.result.is_boolean() && message.result.get<bool>();
-      if (callbacks.submission) callbacks.submission(id, accepted, accepted ? message.result : message.error, static_cast<std::uint64_t>(latency));
+      if (callbacks.submission) {
+        callbacks.submission(id, accepted, message.raw, static_cast<std::uint64_t>(latency));
+      }
     }
   }
 
@@ -109,6 +130,11 @@ struct StratumClient::Impl {
           try { handle(parse_message(line)); }
           catch (const nlohmann::json::exception& error) { emit(std::string("[NETWORK] JSON Stratum invalide: ") + error.what()); }
           catch (const std::invalid_argument& error) { emit(std::string("[NETWORK] message Stratum invalide: ") + error.what()); }
+        }
+      } catch (const asio::system_error& error) {
+        if (!stop_token.stop_requested()) {
+          emit("[NETWORK] déconnexion: code " + std::to_string(error.code().value()) + ": " +
+               asio_error_utf8(error.code()));
         }
       } catch (const std::exception& error) {
         if (!stop_token.stop_requested()) emit(std::string("[NETWORK] déconnexion: ") + error.what());

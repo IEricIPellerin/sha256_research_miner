@@ -4,6 +4,8 @@
 #include "crypto/sha256.h"
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 namespace srm::bitcoin {
@@ -56,6 +58,16 @@ std::uint32_t get_nonce(const Header& header) {
          (static_cast<std::uint32_t>(header[77]) << 8U) |
          (static_cast<std::uint32_t>(header[78]) << 16U) |
          (static_cast<std::uint32_t>(header[79]) << 24U);
+}
+
+std::string nonce_header_le_hex(const Header& header) {
+  return crypto::to_hex(std::span<const std::uint8_t>(header.data() + 76, 4));
+}
+
+std::string stratum_nonce_hex(const std::uint32_t nonce) {
+  std::ostringstream output;
+  output << std::hex << std::nouppercase << std::setfill('0') << std::setw(8) << nonce;
+  return output.str();
 }
 
 std::string header_hex(const Header& header) { return crypto::to_hex(header); }

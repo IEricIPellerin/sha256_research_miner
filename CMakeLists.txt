@@ -45,6 +45,7 @@ endif()
 
 set(SRM_SOURCES
   src/config/config.cpp
+  src/platform/windows_utf8.cpp
   src/checkpoint/state_store.cpp
   src/stratum/stratum_client.cpp
   src/stratum/stratum_message.cpp
@@ -133,6 +134,7 @@ if(SRM_BUILD_TESTS)
     tests/test_target.cpp
     tests/test_stratum_parser.cpp
     tests/test_checkpoint.cpp
+    tests/test_result_logger.cpp
     tests/test_config.cpp
     tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp
@@ -147,9 +149,9 @@ if(SRM_BUILD_TESTS)
   add_test(NAME deterministic_reference_tests COMMAND srm_tests)
 
   add_executable(mock_stratum_server tests/mock_stratum_server.cpp)
-  target_include_directories(mock_stratum_server PRIVATE "${ASIO_INCLUDE_DIR}")
+  target_include_directories(mock_stratum_server PRIVATE include "${ASIO_INCLUDE_DIR}")
   target_compile_definitions(mock_stratum_server PRIVATE ASIO_STANDALONE ASIO_NO_DEPRECATED)
-  target_link_libraries(mock_stratum_server PRIVATE nlohmann_json::nlohmann_json)
+  target_link_libraries(mock_stratum_server PRIVATE srm_core nlohmann_json::nlohmann_json)
   if(WIN32)
     target_compile_definitions(mock_stratum_server PRIVATE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(mock_stratum_server PRIVATE ws2_32)

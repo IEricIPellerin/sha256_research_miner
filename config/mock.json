@@ -11,6 +11,6 @@
   "cpu": { "enabled": true, "threads": 1 },
   "gpu": { "enabled": false, "platform": "auto", "device": "auto", "auto_tune": false },
   "console": { "refresh_ms": 250, "show_job_events": true, "show_best_hash": true },
-  "logging": { "directory": "results", "save_session_log": true, "save_block_candidates": true },
+  "logging": { "directory": "results", "save_session_log": true, "save_block_candidates": true, "save_share_audits": true },
   "checkpoint": { "interval_ms": 500 }
 }

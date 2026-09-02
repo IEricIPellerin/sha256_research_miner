@@ -20,6 +20,8 @@ Header build_stratum_header(std::string_view version_hex,
                             std::uint32_t nonce);
 void set_nonce(Header& header, std::uint32_t nonce);
 std::uint32_t get_nonce(const Header& header);
+std::string nonce_header_le_hex(const Header& header);
+std::string stratum_nonce_hex(std::uint32_t nonce);
 std::string header_hex(const Header& header);
 
 }  // namespace srm::bitcoin

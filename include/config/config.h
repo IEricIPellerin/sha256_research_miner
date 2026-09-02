@@ -37,6 +37,7 @@ struct LoggingConfig {
   std::filesystem::path directory{"results"};
   bool save_session_log{true};
   bool save_block_candidates{true};
+  bool save_share_audits{true};
 };
 struct HistoricalConfig {
   std::string header_hex;

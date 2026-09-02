@@ -108,6 +108,18 @@ Pour chaque compression SHA-256, seules les N premières rondes sont exécutées
 
 Le reduced-round SHA-256 n'est référencé par aucun chemin du mode live.
 
+## Cartographie GPU d'un header-space
+
+L'exécutable research indépendant `sha256_header_space` cartographie exactement une plage de nonces d'un header fixe. Il produit un minimum 256 bits et les compteurs T8, T12, T16, T20, T24, T28 et T32 par zone, sans sauvegarder les hashes individuels et sans utiliser le chemin du mineur live.
+
+Validation Genesis CPU/GPU sur `2^20` nonces:
+
+```powershell
+build\windows-release\Release\sha256_header_space.exe --preset genesis --nonce-count 1048576 --cpu-verify-count 1048576
+```
+
+Un full-space utilise `--full-space`; la zone scientifique par défaut vaut `2^20`. Les sorties déterministes sont placées sous `results/header_space/<experiment_id>/`. L'architecture, l'endianness PoW, le CLI complet, les sorties et les limites de reprise sont documentés dans [docs/header_space_scanner.md](docs/header_space_scanner.md).
+
 ## Test Stratum bout en bout
 
 Le test automatisé lance le serveur local, s'abonne, autorise le worker, envoie une difficulté facile, mine, sauvegarde le JSON, soumet, reçoit `accepted`, puis remplace le job avec `clean_jobs=true`:
@@ -165,7 +177,8 @@ Arrêter avec `Ctrl+C`. Le contrôleur invalide la génération, rejoint CPU/GPU
 ```text
 include/     interfaces modulaires
 src/         implémentations C++20
-kernels/     SHA256d et agrégats reduced-round OpenCL
+kernels/     SHA256d, cartographie header-space et agrégats reduced-round OpenCL
+docs/        protocoles et architecture des expériences isolées
 config/      modes JSON
 state/       checkpoints locaux
 tests/       références, mock Stratum et intégration

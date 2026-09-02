@@ -93,10 +93,33 @@ endif()
 add_executable(sha256_research_miner src/main.cpp)
 target_link_libraries(sha256_research_miner PRIVATE srm_core)
 
+add_library(srm_header_space
+  src/research/header_space.cpp
+  src/research/header_space_opencl.cpp)
+target_include_directories(srm_header_space PUBLIC include)
+target_link_libraries(srm_header_space PUBLIC srm_core)
+if(OpenCL_FOUND)
+  target_link_libraries(srm_header_space PRIVATE OpenCL::OpenCL)
+endif()
+if(MSVC)
+  target_compile_options(srm_header_space PRIVATE /W4 /permissive- /EHsc /utf-8)
+  target_compile_definitions(srm_header_space PRIVATE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+  target_compile_options(srm_header_space PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(sha256_header_space src/header_space_main.cpp)
+target_link_libraries(sha256_header_space PRIVATE srm_header_space nlohmann_json::nlohmann_json)
+
 add_custom_command(TARGET sha256_research_miner POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
           "$<TARGET_FILE_DIR:sha256_research_miner>/kernels")
+
+add_custom_command(TARGET sha256_header_space POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+          "$<TARGET_FILE_DIR:sha256_header_space>/kernels")
 
 if(SRM_BUILD_TESTS)
   enable_testing()
@@ -113,8 +136,9 @@ if(SRM_BUILD_TESTS)
     tests/test_config.cpp
     tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp
-    tests/test_opencl_sha256d.cpp)
-  target_link_libraries(srm_tests PRIVATE srm_core)
+    tests/test_opencl_sha256d.cpp
+    tests/test_header_space.cpp)
+  target_link_libraries(srm_tests PRIVATE srm_core srm_header_space)
   target_include_directories(srm_tests PRIVATE tests)
   target_compile_definitions(srm_tests PRIVATE SRM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   if(OpenCL_FOUND)

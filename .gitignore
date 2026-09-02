@@ -5,6 +5,7 @@
 /results/*.json
 /results/*.log
 /results/*.tmp
+/results/header_space/
 !/results/.gitkeep
 /state/*.tmp
 /state/mock_state.json

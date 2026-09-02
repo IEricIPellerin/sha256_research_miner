@@ -993,18 +993,45 @@ struct MiningController::Impl {
       solution.local_submission_error = "CKPool connection inactive";
     }
 
-    try {
-      logger.save_share_audit(solution);  // durable before any network submission
-      if (solution.network_candidate) {
-        logger.save_candidate(solution);  // preserves the dedicated block-candidate artifact
+    if (solution.network_candidate) {
+      try {
+        logger.save_candidate(solution);  // critical artifact, durable before the secondary audit
+      } catch (const checkpoint::PersistenceError& error) {
+        solution.submission_status = "local_error";
+        solution.local_submission_error =
+            std::string("durable block_candidate pre-submit save failed: ") + error.what();
+        event("[BLOCK] soumission annulée: sauvegarde durable du block_candidate impossible: " +
+              std::string(error.what()));
+        try { logger.update_candidate(solution); }
+        catch (const checkpoint::PersistenceError&) { solution.result_file.clear(); }
+        try { logger.save_share_audit(solution); }
+        catch (const checkpoint::PersistenceError& audit_error) {
+          solution.share_audit_file.clear();
+          event("[SHARE] audit d'erreur non sauvegardé après échec du block_candidate: " +
+                std::string(audit_error.what()));
+        }
+        return;
       }
-    } catch (const checkpoint::PersistenceError& error) {
-      solution.submission_status = "local_error";
-      solution.local_submission_error = std::string("durable pre-submit save failed: ") + error.what();
-      try { logger.update_share_audit(solution); } catch (const checkpoint::PersistenceError&) {}
-      try { logger.update_candidate(solution); } catch (const checkpoint::PersistenceError&) {}
-      event("[SHARE] soumission annulée: sauvegarde durable impossible: " + std::string(error.what()));
-      return;
+      try {
+        logger.save_share_audit(solution);
+      } catch (const checkpoint::PersistenceError& error) {
+        solution.share_audit_file.clear();
+        event("[BLOCK] avertissement: share_audit non sauvegardé; block_candidate durable conservé: " +
+              std::string(error.what()));
+      }
+    } else {
+      try {
+        logger.save_share_audit(solution);  // ordinary share remains durable before submission
+      } catch (const checkpoint::PersistenceError& error) {
+        solution.submission_status = "local_error";
+        solution.local_submission_error =
+            std::string("durable share_audit pre-submit save failed: ") + error.what();
+        try { logger.update_share_audit(solution); }
+        catch (const checkpoint::PersistenceError&) { solution.share_audit_file.clear(); }
+        event("[SHARE] soumission annulée: sauvegarde durable du share_audit impossible: " +
+              std::string(error.what()));
+        return;
+      }
     }
 
     if (!can_submit) {
@@ -1019,27 +1046,31 @@ struct MiningController::Impl {
       solution.submission_id = id;
       const auto [item, inserted] = pending_submissions.emplace(id, std::move(solution));
       if (!inserted) throw std::logic_error("duplicate Stratum submission id");
-      try { logger.update_share_audit(item->second); }
-      catch (const checkpoint::PersistenceError& error) {
-        event("[SHARE] audit non mis à jour après envoi: " + std::string(error.what()));
-      }
       if (item->second.network_candidate) {
         try { logger.update_candidate(item->second); }
         catch (const checkpoint::PersistenceError& error) {
           event("[BLOCK] candidat non mis à jour après envoi: " + std::string(error.what()));
         }
       }
+      if (!item->second.share_audit_file.empty()) {
+        try { logger.update_share_audit(item->second); }
+        catch (const checkpoint::PersistenceError& error) {
+          event("[SHARE] audit non mis à jour après envoi: " + std::string(error.what()));
+        }
+      }
     } catch (const std::exception& error) {
       solution.submission_status = "local_error";
       solution.local_submission_error = std::string("local submission error: ") + error.what();
-      try { logger.update_share_audit(solution); }
-      catch (const checkpoint::PersistenceError& persistence_error) {
-        event("[SHARE] audit d'erreur non sauvegardé: " + std::string(persistence_error.what()));
-      }
       if (solution.network_candidate) {
         try { logger.update_candidate(solution); }
         catch (const checkpoint::PersistenceError& persistence_error) {
           event("[BLOCK] erreur locale non sauvegardée: " + std::string(persistence_error.what()));
+        }
+      }
+      if (!solution.share_audit_file.empty()) {
+        try { logger.update_share_audit(solution); }
+        catch (const checkpoint::PersistenceError& persistence_error) {
+          event("[SHARE] audit d'erreur non sauvegardé: " + std::string(persistence_error.what()));
         }
       }
       event("[SHARE] erreur de soumission: " + std::string(error.what()));
@@ -1148,14 +1179,16 @@ struct MiningController::Impl {
         solution.accepted = accepted;
         solution.submission_latency_us = latency;
         solution.server_response = response;
-        try { logger.update_share_audit(solution); }
-        catch (const checkpoint::PersistenceError& error) {
-          event("[SHARE] réponse non sauvegardée dans l'audit: " + std::string(error.what()));
-        }
         if (solution.network_candidate) {
           try { logger.update_candidate(solution); }
           catch (const checkpoint::PersistenceError& error) {
             event("[BLOCK] réponse non sauvegardée: " + std::string(error.what()));
+          }
+        }
+        if (!solution.share_audit_file.empty()) {
+          try { logger.update_share_audit(solution); }
+          catch (const checkpoint::PersistenceError& error) {
+            event("[SHARE] réponse non sauvegardée dans l'audit: " + std::string(error.what()));
           }
         }
       }

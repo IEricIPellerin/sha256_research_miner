@@ -72,10 +72,10 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
       true};
 
   auto rejected = make_solution(job, "01020304", "05060708", 0xc2608b15U, true);
-  const auto rejected_path = logger.save_share_audit(rejected);
   const auto block_candidate_path = logger.save_candidate(rejected);
-  REQUIRE(std::filesystem::exists(rejected_path));
   REQUIRE(std::filesystem::exists(block_candidate_path));
+  const auto rejected_path = logger.save_share_audit(rejected);
+  REQUIRE(std::filesystem::exists(rejected_path));
   rejected.submission_id = 100;
   rejected.accepted = false;
   rejected.response_timestamp_utc = "2026-09-02T05:36:50.900Z";
@@ -84,8 +84,8 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
   rejected.server_response = nlohmann::json{
       {"id", 100}, {"error", nlohmann::json::array({23, "Above target", nullptr})},
       {"result", nullptr}};
-  logger.update_share_audit(rejected);
   logger.update_candidate(rejected);
+  logger.update_share_audit(rejected);
 
   auto accepted = make_solution(job, "01020304", "05060709", 0x5a5d5d8fU, false);
   const auto accepted_path = logger.save_share_audit(accepted);
@@ -144,5 +144,44 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
   REQUIRE_EQ(accepted_audit.at("submission").at("submission_id").get<std::int64_t>(), 101);
   REQUIRE(accepted_audit.at("submission").at("accepted").get<bool>());
   REQUIRE_EQ(accepted_audit.at("nonce").at("stratum_hex").get<std::string>(), "5a5d5d8f");
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("network candidate update does not depend on a share audit") {
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("srm_block_candidate_without_audit_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  srm::logging::ResultLogger logger(directory, false, true, false);
+  const srm::stratum::StratumJob job{
+      "block-only-job",
+      std::string(64, '0'),
+      "01000000",
+      "ffffffff",
+      {},
+      "20000000",
+      "1d00ffff",
+      "65000000",
+      true};
+
+  auto solution = make_solution(job, "01020304", "05060708", 0xc2608b15U, true);
+  const auto block_candidate_path = logger.save_candidate(solution);
+  REQUIRE(std::filesystem::exists(block_candidate_path));
+  REQUIRE(logger.save_share_audit(solution).empty());
+  REQUIRE(solution.share_audit_file.empty());
+
+  solution.submission_id = 102;
+  solution.accepted = true;
+  solution.response_timestamp_utc = "2026-09-02T08:09:00.000Z";
+  solution.submission_latency_us = 100000;
+  solution.submission_status = "accepted";
+  solution.server_response = nlohmann::json{{"id", 102}, {"error", nullptr}, {"result", true}};
+  logger.update_candidate(solution);
+  logger.update_share_audit(solution);
+
+  const auto block_candidate = srm::checkpoint::StateStore(block_candidate_path).load_or({});
+  REQUIRE_EQ(block_candidate.at("submission_status").get<std::string>(), "accepted");
+  REQUIRE_EQ(block_candidate.at("submission_id").get<std::int64_t>(), 102);
+  REQUIRE(block_candidate.at("accepted").get<bool>());
+  REQUIRE_EQ(block_candidate.at("nonce").get<std::string>(), "c2608b15");
   std::filesystem::remove_all(directory);
 }

@@ -97,7 +97,8 @@ target_link_libraries(sha256_research_miner PRIVATE srm_core)
 add_library(srm_header_space
   src/research/header_space.cpp
   src/research/header_space_opencl.cpp
-  src/research/sha256d_whitebox.cpp)
+  src/research/sha256d_whitebox.cpp
+  src/research/sha256d_whitebox_campaign.cpp)
 target_include_directories(srm_header_space PUBLIC include)
 target_link_libraries(srm_header_space PUBLIC srm_core)
 if(OpenCL_FOUND)

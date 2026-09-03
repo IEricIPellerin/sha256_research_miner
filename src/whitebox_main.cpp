@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -10,20 +11,73 @@ int main(int argc, char** argv) {
   try {
     std::filesystem::path output_directory = "results/whitebox";
     std::string specimen = "genesis";
+    std::optional<std::string> campaign;
+    std::optional<unsigned> save_full_trace_bit;
+    bool specimen_was_set = false;
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
       if (argument == "--output-dir" && i + 1 < argc) {
         output_directory = argv[++i];
       } else if (argument == "--specimen" && i + 1 < argc) {
         specimen = argv[++i];
+        specimen_was_set = true;
+      } else if (argument == "--campaign" && i + 1 < argc) {
+        campaign = argv[++i];
+      } else if (argument == "--save-full-trace-bit" && i + 1 < argc) {
+        const std::string value = argv[++i];
+        std::size_t parsed = 0U;
+        const auto bit = std::stoul(value, &parsed);
+        if (parsed != value.size() || bit >= 32U) {
+          throw std::invalid_argument(
+              "--save-full-trace-bit must be an integer in [0,31]");
+        }
+        save_full_trace_bit = static_cast<unsigned>(bit);
       } else if (argument == "--help") {
         std::cout << "Usage: sha256_whitebox [--output-dir PATH] "
                      "[--specimen genesis|genesis-nonce-plus-1|"
-                     "genesis-nonce-bit0-flip|all]\n";
+                     "genesis-nonce-bit0-flip|all] "
+                     "[--campaign nonce-single-bit-32 "
+                     "[--save-full-trace-bit N]]\n";
         return 0;
       } else {
         throw std::invalid_argument("unknown or incomplete argument: " + argument);
       }
+    }
+    if (campaign) {
+      if (specimen_was_set) {
+        throw std::invalid_argument(
+            "--campaign and --specimen are mutually exclusive");
+      }
+      if (*campaign != "nonce-single-bit-32") {
+        throw std::invalid_argument("unknown campaign: " + *campaign);
+      }
+      const auto artifacts =
+          srm::research::whitebox::build_genesis_nonce_single_bit_campaign(
+              [](const unsigned bit) {
+                std::cout << "[WHITEBOX 32] bit " << bit << "/31 ...\n";
+              });
+      srm::research::whitebox::write_genesis_nonce_single_bit_campaign(
+          artifacts, output_directory);
+      const auto campaign_directory = std::filesystem::absolute(
+          output_directory / "nonce_single_bit_campaign");
+      std::cout << "[WHITEBOX 32] validation: "
+                << artifacts.aggregate.at("audit").at("status").get<std::string>()
+                << '\n'
+                << "[WHITEBOX 32] specimens: 32, per-round rows: 6144, "
+                   "carry rows: 29952, pairwise rows: 1024\n"
+                << "[WHITEBOX 32] artifacts: " << campaign_directory.string()
+                << '\n';
+      if (save_full_trace_bit) {
+        std::cout << "[WHITEBOX 32] saving exhaustive trace for bit "
+                  << *save_full_trace_bit << " ...\n";
+        srm::research::whitebox::write_genesis_nonce_single_bit_full_trace(
+            *save_full_trace_bit, output_directory);
+      }
+      return 0;
+    }
+    if (save_full_trace_bit) {
+      throw std::invalid_argument(
+          "--save-full-trace-bit requires --campaign nonce-single-bit-32");
     }
     const auto report = [&](const srm::research::whitebox::Artifacts& artifacts,
                             const srm::research::whitebox::SpecimenMetadata& metadata) {

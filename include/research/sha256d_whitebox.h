@@ -1,9 +1,11 @@
 //include\research\sha256d_whitebox.h
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <span>
 #include <string>
@@ -27,6 +29,24 @@ struct SpecimenMetadata {
   std::string expected_first_sha256;
   std::string expected_raw_sha256d;
   std::string expected_bitcoin_display_hash;
+};
+
+struct NonceSingleBitReferenceVector {
+  unsigned numeric_nonce_bit{};
+  std::uint32_t nonce{};
+  std::uint32_t w3{};
+  std::string first_sha256;
+  std::string raw_sha256d;
+  std::string bitcoin_display_hash;
+};
+
+struct NonceSingleBitCampaignArtifacts {
+  nlohmann::json aggregate;
+  std::string summary_markdown;
+  std::string per_bit_csv;
+  std::string per_round_csv;
+  std::string carry_summary_csv;
+  std::string pairwise_csv;
 };
 
 // Builds the exhaustive forward trace for one serialized 80-byte Bitcoin
@@ -55,6 +75,42 @@ Artifacts build_genesis_nonce_plus_one_sha256d_whitebox();
 
 // Builds Genesis with exactly numeric nonce bit 0 flipped.
 Artifacts build_genesis_nonce_bit0_flip_sha256d_whitebox();
+
+// Maps a numeric little-endian nonce bit to its bit position in SHA-256 W3.
+// Throws std::invalid_argument unless numeric_nonce_bit is in [0, 31].
+unsigned numeric_nonce_bit_to_w3_bit(unsigned numeric_nonce_bit);
+
+// Independent hashlib-generated fixed vectors for all 32 elementary nonce
+// perturbations. These are test/build guards, not values derived from a trace.
+const std::array<NonceSingleBitReferenceVector, 32>&
+genesis_nonce_single_bit_reference_vectors();
+
+// Builds one generic Genesis single-bit nonce specimen. Bit 0 deliberately
+// reuses specimen C's historical metadata and strict validator.
+Artifacts build_genesis_nonce_single_bit_flip_sha256d_whitebox(
+    unsigned numeric_nonce_bit);
+
+// Runs the controlled 32-bit campaign sequentially. The optional callback is
+// invoked once before each candidate and is intended for compact CLI progress.
+NonceSingleBitCampaignArtifacts build_genesis_nonce_single_bit_campaign(
+    const std::function<void(unsigned)>& progress = {});
+
+// Audits aggregate cardinalities, fixed vectors, mapping, milestones, and all
+// exact differential-validation flags without reconstructing 32 large traces.
+nlohmann::json validate_genesis_nonce_single_bit_campaign(
+    const nlohmann::json& aggregate);
+
+// Writes only the six compact aggregate campaign artifacts into a dedicated
+// nonce_single_bit_campaign child directory.
+void write_genesis_nonce_single_bit_campaign(
+    const NonceSingleBitCampaignArtifacts& artifacts,
+    const std::filesystem::path& output_directory);
+
+// Explicit opt-in helper for one exhaustive candidate trace. Its campaign
+// stem cannot overwrite the historical A/B/C artifact names.
+void write_genesis_nonce_single_bit_full_trace(
+    unsigned numeric_nonce_bit,
+    const std::filesystem::path& output_directory);
 
 // Independently recomputes schedules, round transitions, feed-forwards,
 // bit-column carries, modulo projections, digests, and the final Genesis hash.

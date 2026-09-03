@@ -2,7 +2,10 @@
 #include "research/sha256d_whitebox.h"
 #include "test_support.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -53,6 +56,13 @@ void require_exhaustive_shape(const nlohmann::json& trace) {
   for (const auto& compression : trace.at("sha256_second").at("compressions")) {
     verify_compression(compression);
   }
+}
+
+std::size_t csv_data_rows(const std::string& csv) {
+  const auto lines = static_cast<std::size_t>(
+      std::count(csv.begin(), csv.end(), '\n'));
+  REQUIRE(lines >= 1U);
+  return lines - 1U;
 }
 
 }  // namespace
@@ -204,6 +214,109 @@ TEST_CASE("Genesis A/C single-bit first divergence and bit-24 T1 carry are exact
   REQUIRE_EQ(audit.at("T1_carry_bit24_a").get<unsigned>(), 3U);
   REQUIRE_EQ(audit.at("T1_carry_bit24_c").get<unsigned>(), 2U);
   REQUIRE(audit.at("T1_carry_bit25_equal").get<bool>());
+}
+
+TEST_CASE("All numeric nonce bits map exactly to serialized SHA W3 bits") {
+  for (unsigned numeric_bit = 0U; numeric_bit < 32U; ++numeric_bit) {
+    const auto expected =
+        (3U - numeric_bit / 8U) * 8U + numeric_bit % 8U;
+    REQUIRE_EQ(
+        srm::research::whitebox::numeric_nonce_bit_to_w3_bit(numeric_bit),
+        expected);
+  }
+  bool rejected = false;
+  try {
+    (void)srm::research::whitebox::numeric_nonce_bit_to_w3_bit(32U);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  REQUIRE(rejected);
+}
+
+TEST_CASE("Genesis 32-bit nonce campaign is exhaustive compact and auditable") {
+  unsigned progress_calls = 0U;
+  const auto artifacts =
+      srm::research::whitebox::build_genesis_nonce_single_bit_campaign(
+          [&](const unsigned bit) {
+            REQUIRE_EQ(bit, progress_calls);
+            ++progress_calls;
+          });
+  REQUIRE_EQ(progress_calls, 32U);
+  const auto& aggregate = artifacts.aggregate;
+  const auto audit =
+      srm::research::whitebox::validate_genesis_nonce_single_bit_campaign(
+          aggregate);
+  REQUIRE_EQ(audit.at("status").get<std::string>(), "passed");
+  REQUIRE_EQ(aggregate.at("specimens").size(), 32U);
+  REQUIRE_EQ(aggregate.at("reference_vectors").size(), 32U);
+  REQUIRE_EQ(aggregate.at("pairwise_metrics").size(), 1024U);
+  REQUIRE_EQ(csv_data_rows(artifacts.per_bit_csv), 32U);
+  REQUIRE_EQ(csv_data_rows(artifacts.per_round_csv), 6144U);
+  REQUIRE_EQ(csv_data_rows(artifacts.carry_summary_csv), 29952U);
+  REQUIRE_EQ(csv_data_rows(artifacts.pairwise_csv), 1024U);
+  REQUIRE(aggregate.at("validations")
+              .at("all_modular_addition_differentials_validated").get<bool>());
+  REQUIRE(aggregate.at("validations")
+              .at("all_sigma_xor_differentials_validated").get<bool>());
+  REQUIRE_EQ(aggregate.at("validations")
+                 .at("addition_differential_identity_count").get<std::size_t>(),
+             29952U);
+  REQUIRE_EQ(aggregate.at("validations")
+                 .at("sigma_xor_differential_identity_count").get<std::size_t>(),
+             21504U);
+
+  const auto& vectors =
+      srm::research::whitebox::genesis_nonce_single_bit_reference_vectors();
+  for (unsigned bit = 0U; bit < 32U; ++bit) {
+    const auto& specimen = aggregate.at("specimens").at(bit);
+    REQUIRE_EQ(specimen.at("numeric_nonce_bit").get<unsigned>(), bit);
+    REQUIRE_EQ(specimen.at("W3_bit").get<unsigned>(),
+               srm::research::whitebox::numeric_nonce_bit_to_w3_bit(bit));
+    REQUIRE_EQ(specimen.at("header_hamming_vs_A").get<unsigned>(), 1U);
+    REQUIRE_EQ(specimen.at("nonce_uint32").get<std::uint32_t>(),
+               vectors[bit].nonce);
+    REQUIRE_EQ(specimen.at("W3").get<std::string>(), [&] {
+      std::ostringstream value;
+      value << std::hex << std::nouppercase << std::setfill('0')
+            << std::setw(8) << vectors[bit].w3;
+      return value.str();
+    }());
+    REQUIRE_EQ(specimen.at("final").at("first_sha256").get<std::string>(),
+               vectors[bit].first_sha256);
+    REQUIRE_EQ(specimen.at("final").at("raw_sha256d").get<std::string>(),
+               vectors[bit].raw_sha256d);
+    REQUIRE_EQ(specimen.at("final").at("bitcoin_display_hash").get<std::string>(),
+               vectors[bit].bitcoin_display_hash);
+    REQUIRE_EQ(specimen.at("round_comparisons").size(), 192U);
+    REQUIRE_EQ(specimen.at("diffusion").at("round_first_divergence")
+                   .get<unsigned>(), 67U);
+    REQUIRE_EQ(specimen.at("schedule").at("first_extended_W_that_differs")
+                   .get<unsigned>(), 18U);
+    REQUIRE(specimen.at("schedule").at("W19_direct_modular_relation_validated")
+                .get<bool>());
+  }
+
+  const auto& bit0 = aggregate.at("specimens").at(0);
+  REQUIRE_EQ(bit0.at("nonce_uint32").get<std::uint32_t>(), 2083236892U);
+  REQUIRE_EQ(bit0.at("W3_bit").get<unsigned>(), 24U);
+  REQUIRE_EQ(bit0.at("W3").get<std::string>(), "1cac2b7c");
+  REQUIRE_EQ(bit0.at("round3").at("T1").at("xor").get<std::string>(),
+             "03000000");
+  REQUIRE_EQ(bit0.at("round3").at("new_a").at("xor").get<std::string>(),
+             "0f000000");
+  REQUIRE_EQ(bit0.at("round3").at("new_e").at("xor").get<std::string>(),
+             "01000000");
+  REQUIRE_EQ(bit0.at("round3").at("T1_carry").at("carry_diff_mask_hex")
+                 .get<std::string>(), "01000000");
+}
+
+TEST_CASE("Generic nonce bit0 builder is exactly historical specimen C") {
+  const auto generic =
+      srm::research::whitebox::build_genesis_nonce_single_bit_flip_sha256d_whitebox(0U);
+  const auto historical =
+      srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
+  REQUIRE_EQ(generic.trace, historical.trace);
+  REQUIRE_EQ(generic.summary_markdown, historical.summary_markdown);
 }
 
 TEST_CASE("Genesis white-box audit rejects a corrupted carry column") {

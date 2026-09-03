@@ -29,8 +29,22 @@ constexpr std::string_view kExpectedHeaderHex =
     "0100000000000000000000000000000000000000000000000000000000000000"
     "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
     "4b1e5e4a29ab5f49ffff001d1dac2b7c";
+constexpr std::string_view kExpectedFirstSha256 =
+    "af42031e805ff493a07341e2f74ff58149d22ab9ba19f61343e2c86c71c5d66d";
+constexpr std::string_view kExpectedRawSha256d =
+    "6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000";
 constexpr std::string_view kExpectedBitcoinHash =
     "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+constexpr std::string_view kNoncePlusOneHeaderHex =
+    "0100000000000000000000000000000000000000000000000000000000000000"
+    "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
+    "4b1e5e4a29ab5f49ffff001d1eac2b7c";
+constexpr std::string_view kNoncePlusOneFirstSha256 =
+    "3f20e97bd2b9a79c76c6d8ec16883a3071fc8cf072ecf49ea9c66b7a510d4674";
+constexpr std::string_view kNoncePlusOneRawSha256d =
+    "1c1ba4714930063bebadce0a323e51d097775dbc444187e6ba0caa5d4a7a229b";
+constexpr std::string_view kNoncePlusOneBitcoinHash =
+    "9b227a4a5daa0cbae6874144bc5d7797d0513e320aceadeb3b06304971a41b1c";
 constexpr std::array<unsigned, 10> kModulusBits{1, 2, 4, 8, 12, 16, 20, 24, 28, 32};
 constexpr std::array<const char*, 8> kStateNames{"a", "b", "c", "d", "e", "f", "g", "h"};
 constexpr std::array<const char*, 8> kChainingNames{"H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7"};
@@ -60,7 +74,7 @@ struct CompressionStats {
 };
 
 [[noreturn]] void fail(const std::string& message) {
-  throw std::runtime_error("Genesis SHA256d white-box validation failed: " + message);
+  throw std::runtime_error("SHA256d white-box validation failed: " + message);
 }
 
 void require(const bool condition, const std::string& message) {
@@ -78,6 +92,11 @@ std::string hex_word(const std::uint32_t value) {
   std::ostringstream output;
   output << std::hex << std::nouppercase << std::setfill('0') << std::setw(8) << value;
   return output.str();
+}
+
+std::string reversed_hex(const std::span<const std::uint8_t> bytes) {
+  std::vector<std::uint8_t> reversed(bytes.rbegin(), bytes.rend());
+  return crypto::to_hex(reversed);
 }
 
 std::string binary_value(const std::uint64_t value, const unsigned width) {
@@ -705,9 +724,10 @@ nlohmann::json stats_json(const std::vector<CompressionStats>& stats,
   return result;
 }
 
-std::string markdown_summary(const nlohmann::json& trace) {
+std::string markdown_summary(const nlohmann::json& trace,
+                             const std::string_view title) {
   std::ostringstream out;
-  out << "# Bitcoin Genesis SHA256d white-box summary\n\n"
+  out << "# " << title << "\n\n"
       << "Forward-only deterministic trace. This is one specimen, not a cryptanalytic conclusion.\n\n"
       << "- Header bytes: 80\n"
       << "- Compressions: 3\n"
@@ -807,13 +827,51 @@ std::string markdown_summary(const nlohmann::json& trace) {
 
 }  // namespace
 
-Artifacts build_genesis_sha256d_whitebox() {
-  const auto header = header_space::genesis_header();
-  require(crypto::to_hex(header) == kExpectedHeaderHex, "Genesis header serialization mismatch before tracing");
-  require(header.size() == 80U, "Genesis header is not 80 bytes");
+const SpecimenMetadata& genesis_specimen_metadata() {
+  static const SpecimenMetadata metadata{
+      "bitcoin_genesis_sha256d_whitebox_reference",
+      "Bitcoin Genesis SHA256d white-box summary",
+      "genesis_sha256d",
+      std::string(kExpectedFirstSha256),
+      std::string(kExpectedRawSha256d),
+      std::string(kExpectedBitcoinHash)};
+  return metadata;
+}
+
+const SpecimenMetadata& genesis_nonce_plus_one_specimen_metadata() {
+  static const SpecimenMetadata metadata{
+      "bitcoin_genesis_nonce_plus_1_sha256d_whitebox_reference",
+      "Bitcoin Genesis nonce +1 SHA256d white-box summary",
+      "genesis_nonce_plus_1_sha256d",
+      std::string(kNoncePlusOneFirstSha256),
+      std::string(kNoncePlusOneRawSha256d),
+      std::string(kNoncePlusOneBitcoinHash)};
+  return metadata;
+}
+
+Artifacts build_sha256d_whitebox(const std::span<const std::uint8_t> header,
+                                 const SpecimenMetadata& metadata) {
+  require(header.size() == 80U, "Bitcoin header is not 80 bytes");
   const auto reference_digest = crypto::sha256d(header);
-  require(crypto::bitcoin_hash_hex(reference_digest) == kExpectedBitcoinHash,
-          "production SHA256d does not produce the known Genesis hash");
+  const auto reference_first_digest = crypto::sha256(header);
+  const auto reference_first_hex = crypto::digest_hex(reference_first_digest);
+  const auto reference_raw_hex = crypto::digest_hex(reference_digest);
+  const auto reference_display_hex = crypto::bitcoin_hash_hex(reference_digest);
+  if (!metadata.expected_first_sha256.empty()) {
+    require(reference_first_hex == metadata.expected_first_sha256,
+            "production SHA-256 does not match the specimen's first-digest vector");
+  }
+  if (!metadata.expected_raw_sha256d.empty()) {
+    require(reference_raw_hex == metadata.expected_raw_sha256d,
+            "production SHA256d does not match the specimen's raw-digest vector");
+  }
+  if (!metadata.expected_bitcoin_display_hash.empty()) {
+    require(reference_display_hex == metadata.expected_bitcoin_display_hash,
+            "production SHA256d does not match the specimen's display-hash vector");
+  }
+  const auto expected_display_hash = metadata.expected_bitcoin_display_hash.empty()
+      ? reference_display_hex
+      : metadata.expected_bitcoin_display_hash;
 
   const auto observed = crypto::trace_reduced_sha256d(header, 64);
   require(observed.digest == reference_digest, "observed 64-round trace differs from production SHA256d");
@@ -857,7 +915,7 @@ Artifacts build_genesis_sha256d_whitebox() {
   nlohmann::json trace = nlohmann::json::object();
   trace["schema_version"] = 1;
   trace["experiment"] = {
-      {"id", "bitcoin_genesis_sha256d_whitebox_reference"},
+      {"id", metadata.experiment_id},
       {"scope", "one known 80-byte Bitcoin header"},
       {"direction", "forward_only_header_to_first_sha256_to_second_sha256_to_final_hash"},
       {"interpretation", "descriptive specimen only; no cryptanalytic or predictive claim"},
@@ -879,11 +937,11 @@ Artifacts build_genesis_sha256d_whitebox() {
       {"header_bytes", bytes_json(header)},
       {"fields", {
           {"version", {{"uint32", read_le32(header.data())}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data(), 4))}}},
-          {"previous_block_hash", {{"display_hex", std::string(64, '0')}, {"serialized_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 4, 32))}}},
-          {"merkle_root", {{"display_hex", "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"}, {"serialized_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 36, 32))}}},
+          {"previous_block_hash", {{"display_hex", reversed_hex(std::span<const std::uint8_t>(header.data() + 4, 32))}, {"serialized_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 4, 32))}}},
+          {"merkle_root", {{"display_hex", reversed_hex(std::span<const std::uint8_t>(header.data() + 36, 32))}, {"serialized_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 36, 32))}}},
           {"nTime", {{"uint32", read_le32(header.data() + 68)}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 68, 4))}}},
-          {"nBits", {{"uint32", read_le32(header.data() + 72)}, {"hex", "1d00ffff"}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 72, 4))}}},
-          {"nonce", {{"uint32", read_le32(header.data() + 76)}, {"hex", "7c2bac1d"}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 76, 4))}}}}}};
+          {"nBits", {{"uint32", read_le32(header.data() + 72)}, {"hex", hex_word(read_le32(header.data() + 72))}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 72, 4))}}},
+          {"nonce", {{"uint32", read_le32(header.data() + 76)}, {"hex", hex_word(read_le32(header.data() + 76))}, {"serialized_little_endian_hex", crypto::to_hex(std::span<const std::uint8_t>(header.data() + 76, 4))}}}}}};
   trace["sha256_first"] = {
       {"input", {{"byte_length", header.size()}, {"hex", crypto::to_hex(header)}}},
       {"padding", padding_json(header, first_blocks, 1U)},
@@ -915,19 +973,36 @@ Artifacts build_genesis_sha256d_whitebox() {
       {"raw_digest_byte_order", "SHA-256 digest byte order"},
       {"bitcoin_display_hash", crypto::bitcoin_hash_hex(observed.digest)},
       {"bitcoin_display_rule", "reverse the 32 raw SHA256d digest bytes"},
-      {"expected_bitcoin_display_hash", std::string(kExpectedBitcoinHash)}};
+      {"expected_bitcoin_display_hash", expected_display_hash}};
 
   trace["compression_summaries"] = stats_json(collect_stats(trace), trace);
-  trace["validation"] = validate_genesis_sha256d_whitebox(trace);
-  require(trace.at("final").at("bitcoin_display_hash").get<std::string>() == kExpectedBitcoinHash,
-          "final guard rejected non-Genesis hash");
-  return {trace, markdown_summary(trace)};
+  trace["validation"] = validate_sha256d_whitebox(trace);
+  require(trace.at("final").at("bitcoin_display_hash").get<std::string>() == expected_display_hash,
+          "final guard rejected specimen display hash");
+  return {trace, markdown_summary(trace, metadata.summary_title)};
 }
 
-nlohmann::json validate_genesis_sha256d_whitebox(const nlohmann::json& trace) {
+Artifacts build_genesis_sha256d_whitebox() {
+  const auto header = header_space::genesis_header();
+  require(crypto::to_hex(header) == kExpectedHeaderHex,
+          "Genesis header serialization mismatch before tracing");
+  auto artifacts = build_sha256d_whitebox(header, genesis_specimen_metadata());
+  artifacts.trace["validation"] = validate_genesis_sha256d_whitebox(artifacts.trace);
+  return artifacts;
+}
+
+Artifacts build_genesis_nonce_plus_one_sha256d_whitebox() {
+  const auto header = crypto::from_hex(kNoncePlusOneHeaderHex);
+  auto artifacts = build_sha256d_whitebox(
+      header, genesis_nonce_plus_one_specimen_metadata());
+  artifacts.trace["validation"] =
+      validate_genesis_nonce_plus_one_sha256d_whitebox(artifacts.trace);
+  return artifacts;
+}
+
+nlohmann::json validate_sha256d_whitebox(const nlohmann::json& trace) {
   const auto header = crypto::from_hex(trace.at("input").at("header_hex").get<std::string>());
   require(header.size() == 80U, "header length is not 80 bytes");
-  require(crypto::to_hex(header) == kExpectedHeaderHex, "header is not the canonical Genesis serialization");
   require(trace.at("input").at("header_byte_length").get<std::size_t>() == 80U,
           "recorded header byte length mismatch");
   validate_bytes_json(trace.at("input").at("header_bytes"), header, 0U, "input/header_bytes");
@@ -1133,10 +1208,10 @@ nlohmann::json validate_genesis_sha256d_whitebox(const nlohmann::json& trace) {
                       "second_sha/output/digest_bytes");
   require(crypto::digest_hex(final_digest) == trace.at("final").at("raw_sha256d").get<std::string>(),
           "raw SHA256d mismatch");
-  require(crypto::bitcoin_hash_hex(final_digest) == kExpectedBitcoinHash,
-          "final Bitcoin display hash is not Genesis");
-  require(trace.at("final").at("expected_bitcoin_display_hash").get<std::string>() == kExpectedBitcoinHash,
-          "recorded expected Genesis display hash mismatch");
+  const auto expected_display_hash =
+      trace.at("final").at("expected_bitcoin_display_hash").get<std::string>();
+  require(crypto::bitcoin_hash_hex(final_digest) == expected_display_hash,
+          "final Bitcoin display hash differs from recorded specimen vector");
   require(crypto::sha256d(header) == final_digest,
           "independent production SHA256d audit differs from reconstructed trace");
 
@@ -1161,26 +1236,554 @@ nlohmann::json validate_genesis_sha256d_whitebox(const nlohmann::json& trace) {
       {"first_sha_digest_exact", true},
       {"second_sha_digest_exact", true},
       {"production_sha256d_cross_check", true},
-      {"bitcoin_display_hash", std::string(kExpectedBitcoinHash)}};
+      {"bitcoin_display_hash", expected_display_hash}};
+}
+
+nlohmann::json validate_genesis_sha256d_whitebox(const nlohmann::json& trace) {
+  const auto header_hex = trace.at("input").at("header_hex").get<std::string>();
+  require(header_hex == kExpectedHeaderHex,
+          "header is not the canonical Genesis serialization");
+  require(trace.at("sha256_first").at("output").at("digest_hex").get<std::string>() ==
+              kExpectedFirstSha256,
+          "Genesis first SHA-256 vector mismatch");
+  require(trace.at("final").at("raw_sha256d").get<std::string>() == kExpectedRawSha256d,
+          "Genesis raw SHA256d vector mismatch");
+  require(trace.at("final").at("bitcoin_display_hash").get<std::string>() ==
+              kExpectedBitcoinHash,
+          "Genesis display hash vector mismatch");
+  return validate_sha256d_whitebox(trace);
+}
+
+nlohmann::json validate_genesis_nonce_plus_one_sha256d_whitebox(
+    const nlohmann::json& trace) {
+  const auto header_hex = trace.at("input").at("header_hex").get<std::string>();
+  require(header_hex == kNoncePlusOneHeaderHex,
+          "header is not the canonical Genesis nonce +1 serialization");
+  require(trace.at("sha256_first").at("output").at("digest_hex").get<std::string>() ==
+              kNoncePlusOneFirstSha256,
+          "Genesis nonce +1 first SHA-256 vector mismatch");
+  require(trace.at("final").at("raw_sha256d").get<std::string>() ==
+              kNoncePlusOneRawSha256d,
+          "Genesis nonce +1 raw SHA256d vector mismatch");
+  require(trace.at("final").at("bitcoin_display_hash").get<std::string>() ==
+              kNoncePlusOneBitcoinHash,
+          "Genesis nonce +1 display hash vector mismatch");
+  return validate_sha256d_whitebox(trace);
+}
+
+nlohmann::json validate_genesis_nonce_plus_one_invariants(
+    const nlohmann::json& genesis_trace,
+    const nlohmann::json& nonce_plus_one_trace) {
+  (void)validate_genesis_sha256d_whitebox(genesis_trace);
+  (void)validate_genesis_nonce_plus_one_sha256d_whitebox(nonce_plus_one_trace);
+
+  const auto header_a = crypto::from_hex(
+      genesis_trace.at("input").at("header_hex").get<std::string>());
+  const auto header_b = crypto::from_hex(
+      nonce_plus_one_trace.at("input").at("header_hex").get<std::string>());
+  require(header_a.size() == 80U && header_b.size() == 80U,
+          "A/B headers are not both 80 bytes");
+  require(std::equal(header_a.begin(), header_a.begin() + 76, header_b.begin()),
+          "A/B first 76 header bytes differ");
+  const auto nonce_a = read_le32(header_a.data() + 76);
+  const auto nonce_b = read_le32(header_b.data() + 76);
+  require(nonce_a == 2083236893U && nonce_b == 2083236894U && nonce_b == nonce_a + 1U,
+          "A/B numeric nonce relationship is not exactly +1");
+  std::vector<std::size_t> differing_bytes;
+  unsigned header_hamming_distance = 0;
+  for (std::size_t i = 0; i < header_a.size(); ++i) {
+    if (header_a[i] != header_b[i]) differing_bytes.push_back(i);
+    header_hamming_distance += std::popcount(
+        static_cast<unsigned>(header_a[i] ^ header_b[i]));
+  }
+  require(differing_bytes == std::vector<std::size_t>{76U},
+          "serialized headers do not differ only at byte 76");
+  require(header_hamming_distance == 2U, "A/B header Hamming distance is not two bits");
+
+  const auto& a_compressions = genesis_trace.at("sha256_first").at("compressions");
+  const auto& b_compressions = nonce_plus_one_trace.at("sha256_first").at("compressions");
+  require(a_compressions.at(0) == b_compressions.at(0),
+          "SHA1/compression0 is not bit-for-bit identical");
+  const auto& a_rounds = a_compressions.at(1).at("rounds");
+  const auto& b_rounds = b_compressions.at(1).at("rounds");
+  for (std::size_t round = 0; round < 3; ++round) {
+    require(a_rounds.at(round) == b_rounds.at(round),
+            "a pre-divergence round differs at index " + std::to_string(round));
+  }
+  require(a_rounds.at(3) != b_rounds.at(3),
+          "round 3 unexpectedly remains identical");
+
+  const auto& round_a = a_rounds.at(3);
+  const auto& round_b = b_rounds.at(3);
+  require(round_a.at("state_before") == round_b.at("state_before"),
+          "round 3 state_before differs");
+  const State expected_state{
+      0xde845910U, 0x1f8aee5cU, 0xb7f888dfU, 0xbc909a33U,
+      0x238956e3U, 0xaf5e1cbaU, 0xa8a8881cU, 0xc3c8d8e9U};
+  require(json_state(round_a.at("state_before"), kStateNames, "A/round3/state") ==
+              expected_state,
+          "round 3 state_before is not the expected shared state");
+  for (const auto* operation : {"Sigma0", "Sigma1", "Ch", "Maj"}) {
+    require(round_a.at(operation) == round_b.at(operation),
+            std::string("round 3 ") + operation + " differs");
+  }
+  require(round_a.at("K") == round_b.at("K"), "round 3 K differs");
+
+  const auto w_a = json_word(round_a.at("W"), "A/round3/W");
+  const auto w_b = json_word(round_b.at("W"), "B/round3/W");
+  const auto& additions_a = round_a.at("additions");
+  const auto& additions_b = round_b.at("additions");
+  const auto& t1_operands_a = additions_a.at("T1").at("operands");
+  const auto& t1_operands_b = additions_b.at("T1").at("operands");
+  require(t1_operands_a.size() == 5U && t1_operands_b.size() == 5U,
+          "round 3 T1 does not expose exactly five operands");
+  for (std::size_t operand = 0; operand < 4U; ++operand) {
+    require(t1_operands_a.at(operand) == t1_operands_b.at(operand),
+            "a non-W round 3 T1 operand differs");
+  }
+  const auto t1_a = json_word(additions_a.at("T1").at("result"), "A/round3/T1");
+  const auto t1_b = json_word(additions_b.at("T1").at("result"), "B/round3/T1");
+  const auto t2_a = json_word(additions_a.at("T2").at("result"), "A/round3/T2");
+  const auto t2_b = json_word(additions_b.at("T2").at("result"), "B/round3/T2");
+  const auto new_a_a = json_word(additions_a.at("new_a").at("result"), "A/round3/new_a");
+  const auto new_a_b = json_word(additions_b.at("new_a").at("result"), "B/round3/new_a");
+  const auto new_e_a = json_word(additions_a.at("new_e").at("result"), "A/round3/new_e");
+  const auto new_e_b = json_word(additions_b.at("new_e").at("result"), "B/round3/new_e");
+  require(w_a == 0x1dac2b7cU && w_b == 0x1eac2b7cU, "round 3 W values mismatch");
+  require(json_word(t1_operands_a.at(4).at("value"), "A/round3/T1/W") == w_a &&
+              json_word(t1_operands_b.at(4).at("value"), "B/round3/T1/W") == w_b,
+          "round 3 W is not the sole differing direct T1 operand");
+  require(t2_a == 0x8dcc6978U && t2_b == t2_a, "round 3 T2 mismatch");
+  require(t1_a == 0x0a94a2a8U && t1_b == 0x0b94a2a8U,
+          "round 3 T1 values mismatch");
+  require(new_a_a == 0x98610c20U && new_a_b == 0x99610c20U,
+          "round 3 new_a values mismatch");
+  require(new_e_a == 0xc7253cdbU && new_e_b == 0xc8253cdbU,
+          "round 3 new_e values mismatch");
+  require(w_b - w_a == 0x01000000U && t1_b - t1_a == 0x01000000U &&
+              new_a_b - new_a_a == 0x01000000U &&
+              new_e_b - new_e_a == 0x01000000U,
+          "round 3 modular deltas mismatch");
+  require((w_a ^ w_b) == 0x03000000U && std::popcount(w_a ^ w_b) == 2,
+          "round 3 W XOR delta mismatch");
+  require((t1_a ^ t1_b) == 0x01000000U && std::popcount(t1_a ^ t1_b) == 1,
+          "round 3 T1 XOR delta mismatch");
+  require((new_a_a ^ new_a_b) == 0x01000000U &&
+              std::popcount(new_a_a ^ new_a_b) == 1,
+          "round 3 new_a XOR delta mismatch");
+  require((new_e_a ^ new_e_b) == 0x0f000000U &&
+              std::popcount(new_e_a ^ new_e_b) == 4,
+          "round 3 new_e XOR delta mismatch");
+
+  const auto carry_a = additions_a.at("T1").at("carry_summary").at("carry_profile")
+                           .get<std::vector<std::uint64_t>>();
+  const auto carry_b = additions_b.at("T1").at("carry_summary").at("carry_profile")
+                           .get<std::vector<std::uint64_t>>();
+  require(carry_a.size() == 32U && carry_b.size() == 32U,
+          "round 3 T1 carry profiles are not 32 columns");
+  std::vector<unsigned> differing_carry_columns;
+  for (unsigned bit = 0; bit < 32; ++bit) {
+    if (carry_a[bit] != carry_b[bit]) differing_carry_columns.push_back(bit);
+  }
+  require(differing_carry_columns == std::vector<unsigned>{24U} &&
+              carry_a[24] == 3U && carry_b[24] == 2U,
+          "round 3 T1 carry profile does not differ only at bit 24 (3 -> 2)");
+
+  return {
+      {"status", "passed"},
+      {"headers_80_bytes", true},
+      {"first_76_bytes_identical", true},
+      {"nonce_a_uint32", nonce_a},
+      {"nonce_b_uint32", nonce_b},
+      {"nonce_numeric_delta", 1},
+      {"differing_header_byte_indices", differing_bytes},
+      {"header_hamming_distance_bits", header_hamming_distance},
+      {"sha1_compression0_bit_exact", true},
+      {"sha1_compression1_rounds_0_to_2_bit_exact", true},
+      {"first_divergence", "SHA1/compression1/round3"},
+      {"round3_state_before_identical", true},
+      {"round3_state_only_primitives_identical", true},
+      {"round3_W_a", hex_word(w_a)},
+      {"round3_W_b", hex_word(w_b)},
+      {"round3_T1_a", hex_word(t1_a)},
+      {"round3_T1_b", hex_word(t1_b)},
+      {"round3_T2", hex_word(t2_a)},
+      {"round3_new_a_a", hex_word(new_a_a)},
+      {"round3_new_a_b", hex_word(new_a_b)},
+      {"round3_new_e_a", hex_word(new_e_a)},
+      {"round3_new_e_b", hex_word(new_e_b)},
+      {"modular_deltas_all_01000000", true},
+      {"xor_deltas", {{"W", "03000000"}, {"T1", "01000000"},
+                       {"new_a", "01000000"}, {"new_e", "0f000000"}}},
+      {"xor_hamming_distances", {{"W", 2}, {"T1", 1},
+                                  {"new_a", 1}, {"new_e", 4}}},
+      {"T1_differing_carry_columns", differing_carry_columns},
+      {"T1_carry_bit24_a", carry_a[24]},
+      {"T1_carry_bit24_b", carry_b[24]}};
+}
+
+namespace {
+
+std::string csv_escape(const std::string& value) {
+  std::string result = "\"";
+  for (const auto character : value) {
+    if (character == '"') result += '"';
+    result += character;
+  }
+  result += '"';
+  return result;
+}
+
+void csv_row(std::ostringstream& output,
+             const std::vector<std::string>& fields) {
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (i != 0U) output << ',';
+    output << csv_escape(fields[i]);
+  }
+  output << '\n';
+}
+
+std::string word_hex_json(const nlohmann::json& word) {
+  return word.at("hex").get<std::string>();
+}
+
+std::string byte_array_hex_json(const nlohmann::json& bytes) {
+  std::string result;
+  for (const auto& byte : bytes) result += byte.at("hex").get<std::string>();
+  return result;
+}
+
+std::string named_word_inputs(const nlohmann::json& operands) {
+  std::ostringstream result;
+  for (std::size_t i = 0; i < operands.size(); ++i) {
+    if (i != 0U) result << ';';
+    result << operands[i].at("name").get<std::string>() << '='
+           << word_hex_json(operands[i].at("value"));
+  }
+  return result.str();
+}
+
+std::string compact_named_state(const nlohmann::json& state,
+                                const std::array<const char*, 8>& names) {
+  std::ostringstream result;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (i != 0U) result << ';';
+    result << names[i] << '=' << word_hex_json(state.at(names[i]));
+  }
+  return result.str();
+}
+
+std::string trajectory_csv(const nlohmann::json& trace) {
+  std::ostringstream output;
+  csv_row(output, {"step", "stage", "sha_pass", "compression_index", "round_index",
+                   "header_hex", "W", "a_before", "b_before", "c_before", "d_before",
+                   "e_before", "f_before", "g_before", "h_before", "Sigma0", "Sigma1",
+                   "Ch", "Maj", "T1", "T2", "a_after", "b_after", "c_after", "d_after",
+                   "e_after", "f_after", "g_after", "h_after", "T1_nonzero_carry_count",
+                   "T1_max_carry", "T2_nonzero_carry_count", "new_a_nonzero_carry_count",
+                   "new_e_nonzero_carry_count"});
+  std::vector<std::string> header_row(34);
+  header_row[0] = "0";
+  header_row[1] = "header";
+  header_row[5] = trace.at("input").at("header_hex").get<std::string>();
+  csv_row(output, header_row);
+  std::size_t step = 1;
+  for (const auto* compression : compressions(trace)) {
+    for (const auto& round : compression->at("rounds")) {
+      const auto& before = round.at("state_before");
+      const auto& after = round.at("state_after");
+      const auto& additions = round.at("additions");
+      const auto carry_count = [&](const char* name) {
+        return std::to_string(additions.at(name).at("carry_summary")
+                                  .at("nonzero_carry_count").get<unsigned>());
+      };
+      csv_row(output, {
+          std::to_string(step++), "round",
+          std::to_string(round.at("sha_pass").get<unsigned>()),
+          std::to_string(round.at("compression_index").get<unsigned>()),
+          std::to_string(round.at("round_index").get<unsigned>()), "",
+          word_hex_json(round.at("W")), word_hex_json(before.at("a")),
+          word_hex_json(before.at("b")), word_hex_json(before.at("c")),
+          word_hex_json(before.at("d")), word_hex_json(before.at("e")),
+          word_hex_json(before.at("f")), word_hex_json(before.at("g")),
+          word_hex_json(before.at("h")), word_hex_json(round.at("Sigma0").at("result")),
+          word_hex_json(round.at("Sigma1").at("result")),
+          word_hex_json(round.at("Ch").at("result")),
+          word_hex_json(round.at("Maj").at("result")),
+          word_hex_json(additions.at("T1").at("result")),
+          word_hex_json(additions.at("T2").at("result")),
+          word_hex_json(after.at("a")), word_hex_json(after.at("b")),
+          word_hex_json(after.at("c")), word_hex_json(after.at("d")),
+          word_hex_json(after.at("e")), word_hex_json(after.at("f")),
+          word_hex_json(after.at("g")), word_hex_json(after.at("h")),
+          carry_count("T1"),
+          std::to_string(additions.at("T1").at("carry_summary")
+                             .at("max_carry_value").get<std::uint64_t>()),
+          carry_count("T2"), carry_count("new_a"), carry_count("new_e")});
+    }
+  }
+  require(step == 193U, "trajectory CSV does not contain header plus 192 rounds");
+  return output.str();
+}
+
+std::string operations_csv(const nlohmann::json& trace) {
+  std::ostringstream output;
+  csv_row(output, {"sequence", "sha_pass", "compression_index", "phase", "position",
+                   "identity", "inputs", "operation", "output", "operation_type",
+                   "carry_applicable"});
+  std::size_t sequence = 0;
+  const auto append = [&](const unsigned sha_pass, const unsigned compression_index,
+                          const std::string& phase, const std::string& position,
+                          const std::string& identity, const std::string& inputs,
+                          const std::string& operation, const std::string& result,
+                          const std::string& type, const bool carry) {
+    csv_row(output, {std::to_string(sequence++), std::to_string(sha_pass),
+                     std::to_string(compression_index), phase, position, identity,
+                     inputs, operation, result, type, carry ? "yes" : "no"});
+  };
+
+  for (const auto* compression : compressions(trace)) {
+    const auto sha_pass = compression->at("sha_pass").get<unsigned>();
+    const auto compression_index = compression->at("compression_index").get<unsigned>();
+    const auto& schedule = compression->at("message_schedule").at("words");
+    for (std::size_t t = 0; t < schedule.size(); ++t) {
+      const auto position = "W[" + std::to_string(t) + "]";
+      if (t < 16U) {
+        append(sha_pass, compression_index, "schedule", position, position,
+               byte_array_hex_json(schedule[t].at("source_bytes")),
+               "DECODE_BE32", word_hex_json(schedule[t].at("result")), "bitwise", false);
+        continue;
+      }
+      const auto& word = schedule[t];
+      const auto& s0 = word.at("small_sigma0");
+      const auto& s1 = word.at("small_sigma1");
+      const auto input0 = word_hex_json(s0.at("input"));
+      const auto input1 = word_hex_json(s1.at("input"));
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma0/ROTR7",
+             "x=" + input0, "ROTR7", word_hex_json(s0.at("rotr7")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma0/ROTR18",
+             "x=" + input0, "ROTR18", word_hex_json(s0.at("rotr18")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma0/SHR3",
+             "x=" + input0, "SHR3", word_hex_json(s0.at("shr3")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma0/XOR",
+             "ROTR7=" + word_hex_json(s0.at("rotr7")) + ";ROTR18=" +
+                 word_hex_json(s0.at("rotr18")) + ";SHR3=" + word_hex_json(s0.at("shr3")),
+             "XOR", word_hex_json(s0.at("result")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma1/ROTR17",
+             "x=" + input1, "ROTR17", word_hex_json(s1.at("rotr17")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma1/ROTR19",
+             "x=" + input1, "ROTR19", word_hex_json(s1.at("rotr19")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma1/SHR10",
+             "x=" + input1, "SHR10", word_hex_json(s1.at("shr10")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/sigma1/XOR",
+             "ROTR17=" + word_hex_json(s1.at("rotr17")) + ";ROTR19=" +
+                 word_hex_json(s1.at("rotr19")) + ";SHR10=" + word_hex_json(s1.at("shr10")),
+             "XOR", word_hex_json(s1.at("result")), "bitwise", false);
+      append(sha_pass, compression_index, "schedule", position, position + "/addition",
+             named_word_inputs(word.at("addition").at("operands")), "ADD_MOD_2^32",
+             word_hex_json(word.at("addition").at("result")), "modular", true);
+    }
+
+    for (const auto& round : compression->at("rounds")) {
+      const auto round_index = round.at("round_index").get<unsigned>();
+      const auto position = "round[" + std::to_string(round_index) + "]";
+      const auto& before = round.at("state_before");
+      const auto& after = round.at("state_after");
+      const auto& s0 = round.at("Sigma0");
+      const auto& s1 = round.at("Sigma1");
+      const auto& ch = round.at("Ch");
+      const auto& maj = round.at("Maj");
+      const auto append_bitwise = [&](const std::string& identity,
+                                      const std::string& inputs,
+                                      const std::string& operation,
+                                      const nlohmann::json& result) {
+        append(sha_pass, compression_index, "round", position, position + "/" + identity,
+               inputs, operation, word_hex_json(result), "bitwise", false);
+      };
+      append_bitwise("Sigma0/ROTR2", "a=" + word_hex_json(before.at("a")), "ROTR2", s0.at("rotr2_a"));
+      append_bitwise("Sigma0/ROTR13", "a=" + word_hex_json(before.at("a")), "ROTR13", s0.at("rotr13_a"));
+      append_bitwise("Sigma0/ROTR22", "a=" + word_hex_json(before.at("a")), "ROTR22", s0.at("rotr22_a"));
+      append_bitwise("Sigma0/XOR", "ROTR2=" + word_hex_json(s0.at("rotr2_a")) + ";ROTR13=" + word_hex_json(s0.at("rotr13_a")) + ";ROTR22=" + word_hex_json(s0.at("rotr22_a")), "XOR", s0.at("result"));
+      append_bitwise("Sigma1/ROTR6", "e=" + word_hex_json(before.at("e")), "ROTR6", s1.at("rotr6_e"));
+      append_bitwise("Sigma1/ROTR11", "e=" + word_hex_json(before.at("e")), "ROTR11", s1.at("rotr11_e"));
+      append_bitwise("Sigma1/ROTR25", "e=" + word_hex_json(before.at("e")), "ROTR25", s1.at("rotr25_e"));
+      append_bitwise("Sigma1/XOR", "ROTR6=" + word_hex_json(s1.at("rotr6_e")) + ";ROTR11=" + word_hex_json(s1.at("rotr11_e")) + ";ROTR25=" + word_hex_json(s1.at("rotr25_e")), "XOR", s1.at("result"));
+      append_bitwise("Ch/e_AND_f", "e=" + word_hex_json(before.at("e")) + ";f=" + word_hex_json(before.at("f")), "AND", ch.at("e_and_f"));
+      append_bitwise("Ch/NOT_e", "e=" + word_hex_json(before.at("e")), "NOT", ch.at("not_e"));
+      append_bitwise("Ch/not_e_AND_g", "NOT_e=" + word_hex_json(ch.at("not_e")) + ";g=" + word_hex_json(before.at("g")), "AND", ch.at("not_e_and_g"));
+      append_bitwise("Ch/XOR", "e_AND_f=" + word_hex_json(ch.at("e_and_f")) + ";not_e_AND_g=" + word_hex_json(ch.at("not_e_and_g")), "XOR", ch.at("result"));
+      append_bitwise("Maj/a_AND_b", "a=" + word_hex_json(before.at("a")) + ";b=" + word_hex_json(before.at("b")), "AND", maj.at("a_and_b"));
+      append_bitwise("Maj/a_AND_c", "a=" + word_hex_json(before.at("a")) + ";c=" + word_hex_json(before.at("c")), "AND", maj.at("a_and_c"));
+      append_bitwise("Maj/b_AND_c", "b=" + word_hex_json(before.at("b")) + ";c=" + word_hex_json(before.at("c")), "AND", maj.at("b_and_c"));
+      append_bitwise("Maj/XOR", "a_AND_b=" + word_hex_json(maj.at("a_and_b")) + ";a_AND_c=" + word_hex_json(maj.at("a_and_c")) + ";b_AND_c=" + word_hex_json(maj.at("b_and_c")), "XOR", maj.at("result"));
+      for (const auto* name : {"T1", "T2", "new_a", "new_e"}) {
+        const auto& addition = round.at("additions").at(name);
+        append(sha_pass, compression_index, "round", position, position + "/" + name,
+               named_word_inputs(addition.at("operands")), "ADD_MOD_2^32",
+               word_hex_json(addition.at("result")), "modular", true);
+      }
+      const std::array<std::pair<const char*, const char*>, 6> transfers{{
+          {"b", "a"}, {"c", "b"}, {"d", "c"},
+          {"f", "e"}, {"g", "f"}, {"h", "g"}}};
+      for (const auto& [destination, source] : transfers) {
+        append(sha_pass, compression_index, "round", position,
+               position + "/transfer_" + destination,
+               std::string(source) + "_before=" + word_hex_json(before.at(source)),
+               "TRANSFER", word_hex_json(after.at(destination)), "bitwise", false);
+      }
+    }
+    for (const auto& feed_forward : compression->at("feed_forward")) {
+      const auto& addition = feed_forward.at("addition");
+      append(sha_pass, compression_index, "feed_forward",
+             "word[" + std::to_string(feed_forward.at("word_index").get<unsigned>()) + "]",
+             addition.at("identity").get<std::string>(),
+             named_word_inputs(addition.at("operands")), "ADD_MOD_2^32",
+             word_hex_json(addition.at("result")), "modular", true);
+    }
+  }
+  return output.str();
+}
+
+std::string carries_csv(const nlohmann::json& trace) {
+  std::ostringstream output;
+  csv_row(output, {"sha_pass", "compression_index", "phase", "round_or_word_index",
+                   "addition_identity", "bit_index", "operand_bits", "carry_in",
+                   "column_sum_integer", "result_bit", "carry_out"});
+  const auto append_addition = [&](const unsigned sha_pass,
+                                   const unsigned compression_index,
+                                   const std::string& phase,
+                                   const std::string& position,
+                                   const nlohmann::json& addition) {
+    for (const auto& column : addition.at("bit_columns_lsb_to_msb")) {
+      std::ostringstream operand_bits;
+      for (std::size_t i = 0; i < column.at("operand_bits").size(); ++i) {
+        if (i != 0U) operand_bits << ';';
+        operand_bits << column.at("operand_bits").at(i).at("name").get<std::string>()
+                     << '=' << column.at("operand_bits").at(i).at("bit").get<unsigned>();
+      }
+      csv_row(output, {std::to_string(sha_pass), std::to_string(compression_index),
+                       phase, position, addition.at("identity").get<std::string>(),
+                       std::to_string(column.at("bit_index").get<unsigned>()),
+                       operand_bits.str(),
+                       std::to_string(column.at("carry_in").get<std::uint64_t>()),
+                       std::to_string(column.at("column_sum_integer").get<std::uint64_t>()),
+                       std::to_string(column.at("result_bit").get<unsigned>()),
+                       std::to_string(column.at("carry_out").get<std::uint64_t>())});
+    }
+  };
+  for (const auto* compression : compressions(trace)) {
+    const auto sha_pass = compression->at("sha_pass").get<unsigned>();
+    const auto compression_index = compression->at("compression_index").get<unsigned>();
+    const auto& schedule = compression->at("message_schedule").at("words");
+    for (std::size_t t = 16; t < schedule.size(); ++t) {
+      append_addition(sha_pass, compression_index, "schedule", "W[" + std::to_string(t) + "]",
+                      schedule[t].at("addition"));
+    }
+    for (const auto& round : compression->at("rounds")) {
+      const auto position = "round[" + std::to_string(round.at("round_index").get<unsigned>()) + "]";
+      for (const auto* name : {"T1", "T2", "new_a", "new_e"}) {
+        append_addition(sha_pass, compression_index, "round", position,
+                        round.at("additions").at(name));
+      }
+    }
+    for (const auto& feed_forward : compression->at("feed_forward")) {
+      append_addition(sha_pass, compression_index, "feed_forward",
+                      "word[" + std::to_string(feed_forward.at("word_index").get<unsigned>()) + "]",
+                      feed_forward.at("addition"));
+    }
+  }
+  return output.str();
+}
+
+std::string transitions_csv(const nlohmann::json& trace) {
+  std::ostringstream output;
+  csv_row(output, {"sequence", "transition", "sha_pass", "compression_index",
+                   "input", "output", "rule"});
+  const auto& first_compressions = trace.at("sha256_first").at("compressions");
+  const auto& second_compression = trace.at("sha256_second").at("compressions").at(0);
+  csv_row(output, {"0", "header_to_chunks", "1", "",
+                   trace.at("input").at("header_hex").get<std::string>(),
+                   first_compressions.at(0).at("chunk").at("hex").get<std::string>() + ";" +
+                       first_compressions.at(1).at("chunk").at("hex").get<std::string>(),
+                   "split the 80-byte header and append SHA-256 padding"});
+  csv_row(output, {"1", "padding_SHA1", "1", "",
+                   trace.at("sha256_first").at("input").at("hex").get<std::string>(),
+                   trace.at("sha256_first").at("padding").at("padded_message_hex").get<std::string>(),
+                   trace.at("sha256_first").at("padding").at("rule").get<std::string>()});
+  csv_row(output, {"2", "feed_forward_compression0", "1", "0",
+                   compact_named_state(first_compressions.at(0).at("final_working_state"), kStateNames),
+                   compact_named_state(first_compressions.at(0).at("output_chaining_state"), kChainingNames),
+                   "H[i] = H_old[i] + working_register[i] mod 2^32"});
+  csv_row(output, {"3", "compression0_to_compression1", "1", "0->1",
+                   compact_named_state(first_compressions.at(0).at("output_chaining_state"), kChainingNames),
+                   compact_named_state(first_compressions.at(1).at("input_chaining_state"), kChainingNames),
+                   "output chaining state becomes the next compression input state"});
+  csv_row(output, {"4", "feed_forward_compression1", "1", "1",
+                   compact_named_state(first_compressions.at(1).at("final_working_state"), kStateNames),
+                   compact_named_state(first_compressions.at(1).at("output_chaining_state"), kChainingNames),
+                   "H[i] = H_old[i] + working_register[i] mod 2^32"});
+  csv_row(output, {"5", "digest_SHA1", "1", "1",
+                   compact_named_state(first_compressions.at(1).at("output_chaining_state"), kChainingNames),
+                   trace.at("sha256_first").at("output").at("digest_hex").get<std::string>(),
+                   "serialize H0..H7 big-endian"});
+  csv_row(output, {"6", "digest_SHA1_to_message_SHA2", "1->2", "",
+                   trace.at("sha256_bridge").at("first_sha_digest_hex").get<std::string>(),
+                   trace.at("sha256_bridge").at("second_sha_input_hex").get<std::string>(),
+                   trace.at("sha256_bridge").at("rule").get<std::string>()});
+  csv_row(output, {"7", "padding_SHA2", "2", "2",
+                   trace.at("sha256_second").at("input_digest").at("hex").get<std::string>(),
+                   trace.at("sha256_second").at("padding").at("padded_message_hex").get<std::string>(),
+                   trace.at("sha256_second").at("padding").at("rule").get<std::string>()});
+  csv_row(output, {"8", "feed_forward_final", "2", "2",
+                   compact_named_state(second_compression.at("final_working_state"), kStateNames),
+                   compact_named_state(second_compression.at("output_chaining_state"), kChainingNames),
+                   "H[i] = H_old[i] + working_register[i] mod 2^32"});
+  csv_row(output, {"9", "raw_digest_to_Bitcoin_display_hash", "2", "2",
+                   trace.at("final").at("raw_sha256d").get<std::string>(),
+                   trace.at("final").at("bitcoin_display_hash").get<std::string>(),
+                   trace.at("final").at("bitcoin_display_rule").get<std::string>()});
+  return output.str();
+}
+
+void write_text_file(const std::filesystem::path& path,
+                     const std::string& contents) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output) throw std::runtime_error("cannot create " + path.string());
+  output << contents;
+  if (!output) throw std::runtime_error("cannot finish writing " + path.string());
+}
+
+}  // namespace
+
+void write_sha256d_whitebox(const Artifacts& artifacts,
+                            const SpecimenMetadata& metadata,
+                            const std::filesystem::path& output_directory) {
+  std::filesystem::create_directories(output_directory);
+  require(!metadata.artifact_stem.empty(), "artifact stem is empty");
+  write_text_file(output_directory / (metadata.artifact_stem + "_whitebox.json"),
+                  artifacts.trace.dump(2) + '\n');
+  write_text_file(output_directory / (metadata.artifact_stem + "_whitebox_summary.md"),
+                  artifacts.summary_markdown);
+  write_text_file(output_directory / (metadata.artifact_stem + "_trajectoire_193_avec_header.csv"),
+                  trajectory_csv(artifacts.trace));
+  write_text_file(output_directory / (metadata.artifact_stem + "_operations_unitaires.csv"),
+                  operations_csv(artifacts.trace));
+  write_text_file(output_directory / (metadata.artifact_stem + "_carries_bit_a_bit.csv"),
+                  carries_csv(artifacts.trace));
+  write_text_file(output_directory / (metadata.artifact_stem + "_transitions_hors_rounds.csv"),
+                  transitions_csv(artifacts.trace));
 }
 
 void write_genesis_sha256d_whitebox(const Artifacts& artifacts,
                                     const std::filesystem::path& output_directory) {
-  std::filesystem::create_directories(output_directory);
-  const auto json_path = output_directory / "genesis_sha256d_whitebox.json";
-  const auto summary_path = output_directory / "genesis_sha256d_whitebox_summary.md";
-  {
-    std::ofstream output(json_path, std::ios::binary | std::ios::trunc);
-    if (!output) throw std::runtime_error("cannot create " + json_path.string());
-    output << artifacts.trace.dump(2) << '\n';
-    if (!output) throw std::runtime_error("cannot finish writing " + json_path.string());
-  }
-  {
-    std::ofstream output(summary_path, std::ios::binary | std::ios::trunc);
-    if (!output) throw std::runtime_error("cannot create " + summary_path.string());
-    output << artifacts.summary_markdown;
-    if (!output) throw std::runtime_error("cannot finish writing " + summary_path.string());
-  }
+  write_sha256d_whitebox(artifacts, genesis_specimen_metadata(), output_directory);
+}
+
+void write_genesis_nonce_plus_one_sha256d_whitebox(
+    const Artifacts& artifacts,
+    const std::filesystem::path& output_directory) {
+  write_sha256d_whitebox(artifacts, genesis_nonce_plus_one_specimen_metadata(),
+                         output_directory);
 }
 
 }  // namespace srm::research::whitebox

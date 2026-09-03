@@ -109,6 +109,25 @@ Pour chaque compression SHA-256, seules les N premières rondes sont exécutées
 
 Le reduced-round SHA-256 n'est référencé par aucun chemin du mode live.
 
+## Trace white-box Genesis
+
+L'exécutable de recherche autonome `sha256_whitebox` construit une trace strictement
+forward du header Genesis à travers les trois compressions de SHA256d. Il enregistre
+les 192 rounds, les trois schedules complets, le padding, les opérations bitwise,
+les colonnes de carry entières, les projections modulo 2^k et les feed-forwards.
+La génération s'arrête en erreur si le hash Bitcoin final n'est pas le vecteur
+Genesis connu.
+
+```powershell
+build\windows-release\Release\sha256_whitebox.exe --output-dir results\whitebox
+```
+
+Les sorties déterministes sont
+`results/whitebox/genesis_sha256d_whitebox.json` et
+`results/whitebox/genesis_sha256d_whitebox_summary.md`. Cette instrumentation
+réutilise la trace CPU existante à 64 rounds, mais reste hors du mineur live et des
+noyaux OpenCL.
+
 ## Cartographie GPU d'un header-space
 
 L'exécutable research indépendant `sha256_header_space` cartographie exactement une plage de nonces d'un header fixe. Il produit un minimum 256 bits et les compteurs T8, T12, T16, T20, T24, T28 et T32 par zone, sans sauvegarder les hashes individuels et sans utiliser le chemin du mineur live.

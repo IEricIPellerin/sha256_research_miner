@@ -6,6 +6,7 @@
 /results/*.log
 /results/*.tmp
 /results/header_space/
+/results/whitebox/
 !/results/.gitkeep
 /state/*.tmp
 /state/mock_state.json

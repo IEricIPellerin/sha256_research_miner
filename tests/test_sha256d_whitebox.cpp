@@ -148,6 +148,64 @@ TEST_CASE("Genesis A/B first divergence and bit-24 T1 carry are exact") {
   REQUIRE_EQ(audit.at("T1_carry_bit24_b").get<unsigned>(), 2U);
 }
 
+TEST_CASE("Genesis nonce bit 0 flip SHA256d white-box trace matches independent vectors") {
+  const auto artifacts =
+      srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
+  const auto& trace = artifacts.trace;
+  require_exhaustive_shape(trace);
+  REQUIRE_EQ(trace.at("input").at("header_hex").get<std::string>(),
+      "0100000000000000000000000000000000000000000000000000000000000000"
+      "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
+      "4b1e5e4a29ab5f49ffff001d1cac2b7c");
+  REQUIRE_EQ(trace.at("input").at("fields").at("nonce").at("uint32")
+                 .get<std::uint32_t>(), 2083236892U);
+  REQUIRE_EQ(trace.at("input").at("fields").at("nonce")
+                 .at("serialized_little_endian_hex").get<std::string>(), "1cac2b7c");
+  REQUIRE_EQ(trace.at("sha256_first").at("compressions").at(1)
+                 .at("message_schedule").at("words").at(3)
+                 .at("result").at("hex").get<std::string>(), "1cac2b7c");
+  REQUIRE_EQ(trace.at("sha256_first").at("output").at("digest_hex").get<std::string>(),
+             "b0bded2df03b40f384c981e5b750ad0ccf562554b23c0187bb162ba093bc3dfc");
+  REQUIRE_EQ(trace.at("final").at("raw_sha256d").get<std::string>(),
+             "d9665d1c88b5bf70b741453c4a78c9fe36a537659ad0e7fab087cac13d34dc8c");
+  REQUIRE_EQ(trace.at("final").at("bitcoin_display_hash").get<std::string>(),
+             "8cdc343dc1ca87b0fae7d09a6537a536fec9784a3c4541b770bfb5881c5d66d9");
+  const auto audit =
+      srm::research::whitebox::validate_genesis_nonce_bit0_flip_sha256d_whitebox(trace);
+  REQUIRE_EQ(audit.at("status").get<std::string>(), "passed");
+  REQUIRE_EQ(audit.at("compression_count").get<std::size_t>(), 3U);
+  REQUIRE_EQ(audit.at("total_round_count").get<std::size_t>(), 192U);
+  REQUIRE_EQ(audit.at("total_schedule_word_count").get<std::size_t>(), 192U);
+  REQUIRE(audit.at("all_carry_columns_reconstructed").get<bool>());
+  REQUIRE(audit.at("all_modulo_projections_recomputed").get<bool>());
+}
+
+TEST_CASE("Genesis A/C single-bit first divergence and bit-24 T1 carry are exact") {
+  const auto genesis = srm::research::whitebox::build_genesis_sha256d_whitebox();
+  const auto nonce_bit0_flip =
+      srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
+  const auto audit = srm::research::whitebox::validate_genesis_nonce_bit0_flip_invariants(
+      genesis.trace, nonce_bit0_flip.trace);
+  REQUIRE_EQ(audit.at("status").get<std::string>(), "passed");
+  REQUIRE_EQ(audit.at("first_divergence").get<std::string>(),
+             "SHA1/compression1/round3");
+  REQUIRE_EQ(audit.at("header_hamming_distance_bits").get<unsigned>(), 1U);
+  REQUIRE_EQ(audit.at("differing_header_byte_indices").get<std::vector<std::size_t>>(),
+             std::vector<std::size_t>{76U});
+  REQUIRE_EQ(audit.at("round3_W_a").get<std::string>(), "1dac2b7c");
+  REQUIRE_EQ(audit.at("round3_W_c").get<std::string>(), "1cac2b7c");
+  REQUIRE_EQ(audit.at("modular_deltas").at("W").get<std::string>(), "ff000000");
+  REQUIRE_EQ(audit.at("xor_deltas").at("W").get<std::string>(), "01000000");
+  REQUIRE_EQ(audit.at("xor_deltas").at("T1").get<std::string>(), "03000000");
+  REQUIRE_EQ(audit.at("xor_deltas").at("new_a").get<std::string>(), "0f000000");
+  REQUIRE_EQ(audit.at("xor_deltas").at("new_e").get<std::string>(), "01000000");
+  REQUIRE_EQ(audit.at("T1_differing_carry_columns").get<std::vector<unsigned>>(),
+             std::vector<unsigned>{24U});
+  REQUIRE_EQ(audit.at("T1_carry_bit24_a").get<unsigned>(), 3U);
+  REQUIRE_EQ(audit.at("T1_carry_bit24_c").get<unsigned>(), 2U);
+  REQUIRE(audit.at("T1_carry_bit25_equal").get<bool>());
+}
+
 TEST_CASE("Genesis white-box audit rejects a corrupted carry column") {
   auto artifacts = srm::research::whitebox::build_genesis_sha256d_whitebox();
   auto& carry = artifacts.trace.at("sha256_first").at("compressions").at(0)

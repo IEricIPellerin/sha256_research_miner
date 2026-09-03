@@ -45,6 +45,16 @@ constexpr std::string_view kNoncePlusOneRawSha256d =
     "1c1ba4714930063bebadce0a323e51d097775dbc444187e6ba0caa5d4a7a229b";
 constexpr std::string_view kNoncePlusOneBitcoinHash =
     "9b227a4a5daa0cbae6874144bc5d7797d0513e320aceadeb3b06304971a41b1c";
+constexpr std::string_view kNonceBit0FlipHeaderHex =
+    "0100000000000000000000000000000000000000000000000000000000000000"
+    "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
+    "4b1e5e4a29ab5f49ffff001d1cac2b7c";
+constexpr std::string_view kNonceBit0FlipFirstSha256 =
+    "b0bded2df03b40f384c981e5b750ad0ccf562554b23c0187bb162ba093bc3dfc";
+constexpr std::string_view kNonceBit0FlipRawSha256d =
+    "d9665d1c88b5bf70b741453c4a78c9fe36a537659ad0e7fab087cac13d34dc8c";
+constexpr std::string_view kNonceBit0FlipBitcoinHash =
+    "8cdc343dc1ca87b0fae7d09a6537a536fec9784a3c4541b770bfb5881c5d66d9";
 constexpr std::array<unsigned, 10> kModulusBits{1, 2, 4, 8, 12, 16, 20, 24, 28, 32};
 constexpr std::array<const char*, 8> kStateNames{"a", "b", "c", "d", "e", "f", "g", "h"};
 constexpr std::array<const char*, 8> kChainingNames{"H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7"};
@@ -849,6 +859,17 @@ const SpecimenMetadata& genesis_nonce_plus_one_specimen_metadata() {
   return metadata;
 }
 
+const SpecimenMetadata& genesis_nonce_bit0_flip_specimen_metadata() {
+  static const SpecimenMetadata metadata{
+      "bitcoin_genesis_nonce_bit0_flip_sha256d_whitebox_reference",
+      "Bitcoin Genesis nonce bit 0 flip SHA256d white-box summary",
+      "genesis_nonce_bit0_flip_sha256d",
+      std::string(kNonceBit0FlipFirstSha256),
+      std::string(kNonceBit0FlipRawSha256d),
+      std::string(kNonceBit0FlipBitcoinHash)};
+  return metadata;
+}
+
 Artifacts build_sha256d_whitebox(const std::span<const std::uint8_t> header,
                                  const SpecimenMetadata& metadata) {
   require(header.size() == 80U, "Bitcoin header is not 80 bytes");
@@ -997,6 +1018,15 @@ Artifacts build_genesis_nonce_plus_one_sha256d_whitebox() {
       header, genesis_nonce_plus_one_specimen_metadata());
   artifacts.trace["validation"] =
       validate_genesis_nonce_plus_one_sha256d_whitebox(artifacts.trace);
+  return artifacts;
+}
+
+Artifacts build_genesis_nonce_bit0_flip_sha256d_whitebox() {
+  const auto header = crypto::from_hex(kNonceBit0FlipHeaderHex);
+  auto artifacts = build_sha256d_whitebox(
+      header, genesis_nonce_bit0_flip_specimen_metadata());
+  artifacts.trace["validation"] =
+      validate_genesis_nonce_bit0_flip_sha256d_whitebox(artifacts.trace);
   return artifacts;
 }
 
@@ -1271,6 +1301,23 @@ nlohmann::json validate_genesis_nonce_plus_one_sha256d_whitebox(
   return validate_sha256d_whitebox(trace);
 }
 
+nlohmann::json validate_genesis_nonce_bit0_flip_sha256d_whitebox(
+    const nlohmann::json& trace) {
+  const auto header_hex = trace.at("input").at("header_hex").get<std::string>();
+  require(header_hex == kNonceBit0FlipHeaderHex,
+          "header is not the canonical Genesis nonce bit 0 flip serialization");
+  require(trace.at("sha256_first").at("output").at("digest_hex").get<std::string>() ==
+              kNonceBit0FlipFirstSha256,
+          "Genesis nonce bit 0 flip first SHA-256 vector mismatch");
+  require(trace.at("final").at("raw_sha256d").get<std::string>() ==
+              kNonceBit0FlipRawSha256d,
+          "Genesis nonce bit 0 flip raw SHA256d vector mismatch");
+  require(trace.at("final").at("bitcoin_display_hash").get<std::string>() ==
+              kNonceBit0FlipBitcoinHash,
+          "Genesis nonce bit 0 flip display hash vector mismatch");
+  return validate_sha256d_whitebox(trace);
+}
+
 nlohmann::json validate_genesis_nonce_plus_one_invariants(
     const nlohmann::json& genesis_trace,
     const nlohmann::json& nonce_plus_one_trace) {
@@ -1420,6 +1467,170 @@ nlohmann::json validate_genesis_nonce_plus_one_invariants(
       {"T1_differing_carry_columns", differing_carry_columns},
       {"T1_carry_bit24_a", carry_a[24]},
       {"T1_carry_bit24_b", carry_b[24]}};
+}
+
+nlohmann::json validate_genesis_nonce_bit0_flip_invariants(
+    const nlohmann::json& genesis_trace,
+    const nlohmann::json& nonce_bit0_flip_trace) {
+  (void)validate_genesis_sha256d_whitebox(genesis_trace);
+  (void)validate_genesis_nonce_bit0_flip_sha256d_whitebox(nonce_bit0_flip_trace);
+
+  const auto header_a = crypto::from_hex(
+      genesis_trace.at("input").at("header_hex").get<std::string>());
+  const auto header_c = crypto::from_hex(
+      nonce_bit0_flip_trace.at("input").at("header_hex").get<std::string>());
+  require(header_a.size() == 80U && header_c.size() == 80U,
+          "A/C headers are not both 80 bytes");
+  require(std::equal(header_a.begin(), header_a.begin() + 76, header_c.begin()),
+          "A/C first 76 header bytes differ");
+  const auto nonce_a = read_le32(header_a.data() + 76);
+  const auto nonce_c = read_le32(header_c.data() + 76);
+  require(nonce_a == 2083236893U && nonce_c == 2083236892U &&
+              nonce_c == (nonce_a ^ 0x00000001U),
+          "A/C numeric nonce relationship is not exactly bit 0 flipped");
+  std::vector<std::size_t> differing_bytes;
+  unsigned header_hamming_distance = 0;
+  for (std::size_t i = 0; i < header_a.size(); ++i) {
+    if (header_a[i] != header_c[i]) differing_bytes.push_back(i);
+    header_hamming_distance += std::popcount(
+        static_cast<unsigned>(header_a[i] ^ header_c[i]));
+  }
+  require(differing_bytes == std::vector<std::size_t>{76U},
+          "serialized A/C headers do not differ only at byte 76");
+  require(header_hamming_distance == 1U,
+          "A/C header Hamming distance is not exactly one bit");
+
+  const auto& a_compressions = genesis_trace.at("sha256_first").at("compressions");
+  const auto& c_compressions =
+      nonce_bit0_flip_trace.at("sha256_first").at("compressions");
+  require(a_compressions.at(0) == c_compressions.at(0),
+          "A/C SHA1/compression0 is not bit-for-bit identical");
+  const auto& a_rounds = a_compressions.at(1).at("rounds");
+  const auto& c_rounds = c_compressions.at(1).at("rounds");
+  for (std::size_t round = 0; round < 3; ++round) {
+    require(a_rounds.at(round) == c_rounds.at(round),
+            "an A/C pre-divergence round differs at index " +
+                std::to_string(round));
+  }
+  require(a_rounds.at(3) != c_rounds.at(3),
+          "A/C round 3 unexpectedly remains identical");
+
+  const auto& round_a = a_rounds.at(3);
+  const auto& round_c = c_rounds.at(3);
+  require(round_a.at("state_before") == round_c.at("state_before"),
+          "A/C round 3 state_before differs");
+  const State expected_state{
+      0xde845910U, 0x1f8aee5cU, 0xb7f888dfU, 0xbc909a33U,
+      0x238956e3U, 0xaf5e1cbaU, 0xa8a8881cU, 0xc3c8d8e9U};
+  require(json_state(round_a.at("state_before"), kStateNames, "A/round3/state") ==
+              expected_state,
+          "A/C round 3 state_before is not the expected shared state");
+  for (const auto* operation : {"Sigma0", "Sigma1", "Ch", "Maj"}) {
+    require(round_a.at(operation) == round_c.at(operation),
+            std::string("A/C round 3 ") + operation + " differs");
+  }
+  require(round_a.at("K") == round_c.at("K"), "A/C round 3 K differs");
+
+  const auto w_a = json_word(round_a.at("W"), "A/round3/W");
+  const auto w_c = json_word(round_c.at("W"), "C/round3/W");
+  const auto& additions_a = round_a.at("additions");
+  const auto& additions_c = round_c.at("additions");
+  const auto& t1_operands_a = additions_a.at("T1").at("operands");
+  const auto& t1_operands_c = additions_c.at("T1").at("operands");
+  require(t1_operands_a.size() == 5U && t1_operands_c.size() == 5U,
+          "A/C round 3 T1 does not expose exactly five operands");
+  for (std::size_t operand = 0; operand < 4U; ++operand) {
+    require(t1_operands_a.at(operand) == t1_operands_c.at(operand),
+            "an A/C non-W round 3 T1 operand differs");
+  }
+  const auto t1_a = json_word(additions_a.at("T1").at("result"), "A/round3/T1");
+  const auto t1_c = json_word(additions_c.at("T1").at("result"), "C/round3/T1");
+  const auto t2_a = json_word(additions_a.at("T2").at("result"), "A/round3/T2");
+  const auto t2_c = json_word(additions_c.at("T2").at("result"), "C/round3/T2");
+  const auto new_a_a =
+      json_word(additions_a.at("new_a").at("result"), "A/round3/new_a");
+  const auto new_a_c =
+      json_word(additions_c.at("new_a").at("result"), "C/round3/new_a");
+  const auto new_e_a =
+      json_word(additions_a.at("new_e").at("result"), "A/round3/new_e");
+  const auto new_e_c =
+      json_word(additions_c.at("new_e").at("result"), "C/round3/new_e");
+  require(w_a == 0x1dac2b7cU && w_c == 0x1cac2b7cU,
+          "A/C round 3 W values mismatch");
+  require(json_word(t1_operands_a.at(4).at("value"), "A/round3/T1/W") == w_a &&
+              json_word(t1_operands_c.at(4).at("value"), "C/round3/T1/W") == w_c,
+          "A/C round 3 W is not the sole differing direct T1 operand");
+  require(additions_a.at("T2") == additions_c.at("T2") &&
+              t2_a == 0x8dcc6978U && t2_c == t2_a,
+          "A/C round 3 T2 differs");
+  require(t1_a == 0x0a94a2a8U && t1_c == 0x0994a2a8U,
+          "A/C round 3 T1 values mismatch");
+  require(new_a_a == 0x98610c20U && new_a_c == 0x97610c20U,
+          "A/C round 3 new_a values mismatch");
+  require(new_e_a == 0xc7253cdbU && new_e_c == 0xc6253cdbU,
+          "A/C round 3 new_e values mismatch");
+  require(w_c - w_a == 0xff000000U && t1_c - t1_a == 0xff000000U &&
+              new_a_c - new_a_a == 0xff000000U &&
+              new_e_c - new_e_a == 0xff000000U,
+          "A/C round 3 modular deltas mismatch");
+  require((w_a ^ w_c) == 0x01000000U && std::popcount(w_a ^ w_c) == 1,
+          "A/C round 3 W XOR delta mismatch");
+  require((t1_a ^ t1_c) == 0x03000000U && std::popcount(t1_a ^ t1_c) == 2,
+          "A/C round 3 T1 XOR delta mismatch");
+  require((new_a_a ^ new_a_c) == 0x0f000000U &&
+              std::popcount(new_a_a ^ new_a_c) == 4,
+          "A/C round 3 new_a XOR delta mismatch");
+  require((new_e_a ^ new_e_c) == 0x01000000U &&
+              std::popcount(new_e_a ^ new_e_c) == 1,
+          "A/C round 3 new_e XOR delta mismatch");
+
+  const auto carry_a = additions_a.at("T1").at("carry_summary").at("carry_profile")
+                           .get<std::vector<std::uint64_t>>();
+  const auto carry_c = additions_c.at("T1").at("carry_summary").at("carry_profile")
+                           .get<std::vector<std::uint64_t>>();
+  require(carry_a.size() == 32U && carry_c.size() == 32U,
+          "A/C round 3 T1 carry profiles are not 32 columns");
+  std::vector<unsigned> differing_carry_columns;
+  for (unsigned bit = 0; bit < 32; ++bit) {
+    if (carry_a[bit] != carry_c[bit]) differing_carry_columns.push_back(bit);
+  }
+  require(differing_carry_columns == std::vector<unsigned>{24U} &&
+              carry_a[24] == 3U && carry_c[24] == 2U && carry_a[25] == carry_c[25],
+          "A/C round 3 T1 carry profile does not differ only at bit 24 (3 -> 2)");
+
+  return {
+      {"status", "passed"},
+      {"headers_80_bytes", true},
+      {"first_76_bytes_identical", true},
+      {"nonce_a_uint32", nonce_a},
+      {"nonce_c_uint32", nonce_c},
+      {"nonce_relationship", "nonce_c = nonce_a XOR 0x00000001"},
+      {"differing_header_byte_indices", differing_bytes},
+      {"header_hamming_distance_bits", header_hamming_distance},
+      {"sha1_compression0_bit_exact", true},
+      {"sha1_compression1_rounds_0_to_2_bit_exact", true},
+      {"first_divergence", "SHA1/compression1/round3"},
+      {"round3_state_before_identical", true},
+      {"round3_state_only_primitives_identical", true},
+      {"round3_W_a", hex_word(w_a)},
+      {"round3_W_c", hex_word(w_c)},
+      {"round3_T1_a", hex_word(t1_a)},
+      {"round3_T1_c", hex_word(t1_c)},
+      {"round3_T2", hex_word(t2_a)},
+      {"round3_new_a_a", hex_word(new_a_a)},
+      {"round3_new_a_c", hex_word(new_a_c)},
+      {"round3_new_e_a", hex_word(new_e_a)},
+      {"round3_new_e_c", hex_word(new_e_c)},
+      {"modular_deltas", {{"W", "ff000000"}, {"T1", "ff000000"},
+                            {"new_a", "ff000000"}, {"new_e", "ff000000"}}},
+      {"xor_deltas", {{"W", "01000000"}, {"T1", "03000000"},
+                        {"new_a", "0f000000"}, {"new_e", "01000000"}}},
+      {"xor_hamming_distances", {{"W", 1}, {"T1", 2},
+                                  {"new_a", 4}, {"new_e", 1}}},
+      {"T1_differing_carry_columns", differing_carry_columns},
+      {"T1_carry_bit24_a", carry_a[24]},
+      {"T1_carry_bit24_c", carry_c[24]},
+      {"T1_carry_bit25_equal", true}};
 }
 
 namespace {
@@ -1783,6 +1994,13 @@ void write_genesis_nonce_plus_one_sha256d_whitebox(
     const Artifacts& artifacts,
     const std::filesystem::path& output_directory) {
   write_sha256d_whitebox(artifacts, genesis_nonce_plus_one_specimen_metadata(),
+                         output_directory);
+}
+
+void write_genesis_nonce_bit0_flip_sha256d_whitebox(
+    const Artifacts& artifacts,
+    const std::filesystem::path& output_directory) {
+  write_sha256d_whitebox(artifacts, genesis_nonce_bit0_flip_specimen_metadata(),
                          output_directory);
 }
 

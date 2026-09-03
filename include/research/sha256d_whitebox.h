@@ -53,6 +53,9 @@ Artifacts build_genesis_sha256d_whitebox();
 // Builds Genesis with its numeric nonce incremented by exactly one.
 Artifacts build_genesis_nonce_plus_one_sha256d_whitebox();
 
+// Builds Genesis with exactly numeric nonce bit 0 flipped.
+Artifacts build_genesis_nonce_bit0_flip_sha256d_whitebox();
+
 // Independently recomputes schedules, round transitions, feed-forwards,
 // bit-column carries, modulo projections, digests, and the final Genesis hash.
 // Throws std::runtime_error on the first mismatch and otherwise returns the
@@ -63,20 +66,35 @@ nlohmann::json validate_genesis_sha256d_whitebox(const nlohmann::json& trace);
 nlohmann::json validate_genesis_nonce_plus_one_sha256d_whitebox(
     const nlohmann::json& trace);
 
+// Applies the strict independent reference vectors for specimen C.
+nlohmann::json validate_genesis_nonce_bit0_flip_sha256d_whitebox(
+    const nlohmann::json& trace);
+
 // Validates only the targeted A/B causal invariants through the first
 // divergent round. It deliberately does not interpret later propagation.
 nlohmann::json validate_genesis_nonce_plus_one_invariants(
     const nlohmann::json& genesis_trace,
     const nlohmann::json& nonce_plus_one_trace);
 
+// Validates only the targeted A/C causal invariants through the first
+// divergent round. It deliberately does not interpret later propagation.
+nlohmann::json validate_genesis_nonce_bit0_flip_invariants(
+    const nlohmann::json& genesis_trace,
+    const nlohmann::json& nonce_bit0_flip_trace);
+
 const SpecimenMetadata& genesis_specimen_metadata();
 const SpecimenMetadata& genesis_nonce_plus_one_specimen_metadata();
+const SpecimenMetadata& genesis_nonce_bit0_flip_specimen_metadata();
 
 // Writes stable UTF-8 artifacts, creating output_directory when necessary.
 void write_genesis_sha256d_whitebox(const Artifacts& artifacts,
                                     const std::filesystem::path& output_directory);
 
 void write_genesis_nonce_plus_one_sha256d_whitebox(
+    const Artifacts& artifacts,
+    const std::filesystem::path& output_directory);
+
+void write_genesis_nonce_bit0_flip_sha256d_whitebox(
     const Artifacts& artifacts,
     const std::filesystem::path& output_directory);
 

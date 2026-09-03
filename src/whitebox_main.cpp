@@ -18,7 +18,8 @@ int main(int argc, char** argv) {
         specimen = argv[++i];
       } else if (argument == "--help") {
         std::cout << "Usage: sha256_whitebox [--output-dir PATH] "
-                     "[--specimen genesis|genesis-nonce-plus-1|all]\n";
+                     "[--specimen genesis|genesis-nonce-plus-1|"
+                     "genesis-nonce-bit0-flip|all]\n";
         return 0;
       } else {
         throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -50,6 +51,13 @@ int main(int argc, char** argv) {
           artifacts, output_directory);
       report(artifacts,
              srm::research::whitebox::genesis_nonce_plus_one_specimen_metadata());
+    } else if (specimen == "genesis-nonce-bit0-flip") {
+      const auto artifacts =
+          srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
+      srm::research::whitebox::write_genesis_nonce_bit0_flip_sha256d_whitebox(
+          artifacts, output_directory);
+      report(artifacts,
+             srm::research::whitebox::genesis_nonce_bit0_flip_specimen_metadata());
     } else if (specimen == "all") {
       const auto genesis = srm::research::whitebox::build_genesis_sha256d_whitebox();
       const auto nonce_plus_one =
@@ -57,19 +65,36 @@ int main(int argc, char** argv) {
       const auto invariants =
           srm::research::whitebox::validate_genesis_nonce_plus_one_invariants(
               genesis.trace, nonce_plus_one.trace);
+      const auto nonce_bit0_flip =
+          srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
+      const auto bit0_flip_invariants =
+          srm::research::whitebox::validate_genesis_nonce_bit0_flip_invariants(
+              genesis.trace, nonce_bit0_flip.trace);
       srm::research::whitebox::write_genesis_sha256d_whitebox(genesis, output_directory);
       srm::research::whitebox::write_genesis_nonce_plus_one_sha256d_whitebox(
           nonce_plus_one, output_directory);
+      srm::research::whitebox::write_genesis_nonce_bit0_flip_sha256d_whitebox(
+          nonce_bit0_flip, output_directory);
       report(genesis, srm::research::whitebox::genesis_specimen_metadata());
       report(nonce_plus_one,
              srm::research::whitebox::genesis_nonce_plus_one_specimen_metadata());
+      report(nonce_bit0_flip,
+             srm::research::whitebox::genesis_nonce_bit0_flip_specimen_metadata());
       std::cout << "[WHITEBOX] A/B invariants: "
                 << invariants.at("status").get<std::string>() << '\n'
                 << "[WHITEBOX] first divergence: "
                 << invariants.at("first_divergence").get<std::string>() << '\n'
                 << "[WHITEBOX] T1 carry bit24: "
                 << invariants.at("T1_carry_bit24_a").get<unsigned>() << " -> "
-                << invariants.at("T1_carry_bit24_b").get<unsigned>() << '\n';
+                << invariants.at("T1_carry_bit24_b").get<unsigned>() << '\n'
+                << "[WHITEBOX] A/C invariants: "
+                << bit0_flip_invariants.at("status").get<std::string>() << '\n'
+                << "[WHITEBOX] first divergence: "
+                << bit0_flip_invariants.at("first_divergence").get<std::string>() << '\n'
+                << "[WHITEBOX] T1 carry bit24: "
+                << bit0_flip_invariants.at("T1_carry_bit24_a").get<unsigned>()
+                << " -> "
+                << bit0_flip_invariants.at("T1_carry_bit24_c").get<unsigned>() << '\n';
     } else {
       throw std::invalid_argument("unknown specimen: " + specimen);
     }

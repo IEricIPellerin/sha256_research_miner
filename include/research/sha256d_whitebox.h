@@ -49,6 +49,42 @@ struct NonceSingleBitCampaignArtifacts {
   std::string pairwise_csv;
 };
 
+struct MerkleContextTransferArtifacts {
+  nlohmann::json aggregate;
+  std::string summary_markdown;
+  std::string contexts_csv;
+  std::string per_context_bit_csv;
+  std::string bit_transfer_summary_csv;
+  std::string direction_effects_csv;
+  std::string per_bit_round_summary_csv;
+  std::string pairwise_transfer_csv;
+};
+
+// Frozen hashlib fixtures for synthetic Merkle-field context ids 0..63.
+const std::array<std::array<std::uint8_t, 32>, 64>&
+merkle_context_transfer_fields();
+
+// Runs the first context_count contexts in deterministic id order. The full
+// campaign uses 64; smaller prefixes support fast permanent tests. Discovery
+// (0..31) is always completed and frozen before holdout (32..63) is evaluated.
+MerkleContextTransferArtifacts build_merkle_context_transfer_campaign(
+    std::size_t context_count = 64U,
+    const std::function<void(unsigned, unsigned)>& progress = {});
+
+nlohmann::json validate_merkle_context_transfer_campaign(
+    const nlohmann::json& aggregate,
+    std::size_t expected_context_count = 64U);
+
+void write_merkle_context_transfer_campaign(
+    const MerkleContextTransferArtifacts& artifacts,
+    const std::filesystem::path& output_directory);
+
+// Explicit opt-in exhaustive JSON trace for one synthetic context/bit.
+void write_merkle_context_transfer_full_trace(
+    unsigned context_id,
+    unsigned numeric_nonce_bit,
+    const std::filesystem::path& output_directory);
+
 // Builds the exhaustive forward trace for one serialized 80-byte Bitcoin
 // header. Non-empty expected digests are independent guards: generation fails
 // when production SHA-256/SHA256d does not match them.

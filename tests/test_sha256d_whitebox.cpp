@@ -1,5 +1,6 @@
 //tests\test_sha256d_whitebox.cpp
 #include "research/sha256d_whitebox.h"
+#include "crypto/sha256.h"
 #include "test_support.h"
 
 #include <algorithm>
@@ -317,6 +318,45 @@ TEST_CASE("Generic nonce bit0 builder is exactly historical specimen C") {
       srm::research::whitebox::build_genesis_nonce_bit0_flip_sha256d_whitebox();
   REQUIRE_EQ(generic.trace, historical.trace);
   REQUIRE_EQ(generic.summary_markdown, historical.summary_markdown);
+}
+
+TEST_CASE("Synthetic Merkle context fixtures and compact transfer smoke campaign are deterministic") {
+  const auto& fields =
+      srm::research::whitebox::merkle_context_transfer_fields();
+  REQUIRE_EQ(fields.size(), 64U);
+  REQUIRE_EQ(srm::crypto::to_hex(fields.at(0)),
+             "5b46b49fee3d11559452c005790fdc1c4c05826c888353acbbc4e739c6d8181c");
+  REQUIRE_EQ(srm::crypto::to_hex(fields.at(63)),
+             "f15917d442424a06da2699173c7037468e2ce0482e4da1f54d273b01000a5cc2");
+
+  unsigned progress_calls = 0U;
+  const auto artifacts =
+      srm::research::whitebox::build_merkle_context_transfer_campaign(
+          4U, [&](const unsigned context, const unsigned bit) {
+            REQUIRE_EQ(context, progress_calls / 32U);
+            REQUIRE_EQ(bit, progress_calls % 32U);
+            ++progress_calls;
+          });
+  REQUIRE_EQ(progress_calls, 128U);
+  const auto audit =
+      srm::research::whitebox::validate_merkle_context_transfer_campaign(
+          artifacts.aggregate, 4U);
+  REQUIRE_EQ(audit.at("status").get<std::string>(), "passed");
+  REQUIRE_EQ(artifacts.aggregate.at("context_summaries").size(), 4U);
+  REQUIRE_EQ(artifacts.aggregate.at("bit_transfer_summaries").size(), 32U);
+  REQUIRE_EQ(artifacts.aggregate.at("pairwise_transfer_summaries").size(), 496U);
+  REQUIRE_EQ(artifacts.aggregate.at("validations")
+                 .at("addition_differential_identity_count").get<std::size_t>(),
+             128U * 936U);
+  REQUIRE_EQ(artifacts.aggregate.at("validations")
+                 .at("sigma_xor_differential_identity_count").get<std::size_t>(),
+             128U * 672U);
+  REQUIRE_EQ(csv_data_rows(artifacts.contexts_csv), 4U);
+  REQUIRE_EQ(csv_data_rows(artifacts.per_context_bit_csv), 128U);
+  REQUIRE_EQ(csv_data_rows(artifacts.bit_transfer_summary_csv), 32U);
+  REQUIRE_EQ(csv_data_rows(artifacts.direction_effects_csv), 4U);
+  REQUIRE_EQ(csv_data_rows(artifacts.per_bit_round_summary_csv), 6144U);
+  REQUIRE_EQ(csv_data_rows(artifacts.pairwise_transfer_csv), 496U);
 }
 
 TEST_CASE("Genesis white-box audit rejects a corrupted carry column") {

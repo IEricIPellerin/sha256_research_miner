@@ -9,6 +9,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <string>
 
 namespace {
 
@@ -144,6 +146,98 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
   REQUIRE_EQ(accepted_audit.at("submission").at("submission_id").get<std::int64_t>(), 101);
   REQUIRE(accepted_audit.at("submission").at("accepted").get<bool>());
   REQUIRE_EQ(accepted_audit.at("nonce").at("stratum_hex").get<std::string>(), "5a5d5d8f");
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("JSONL archive appends complete independent records") {
+  const auto directory =
+      std::filesystem::temp_directory_path() /
+      ("srm_jsonl_archive_" +
+       std::to_string(
+           std::chrono::steady_clock::now()
+               .time_since_epoch()
+               .count()));
+
+  srm::logging::ResultLogger logger(
+      directory,
+      false,
+      false,
+      false);
+
+  logger.append_jsonl(
+      "stratum_jobs.jsonl",
+      {
+          {"schema_version", 1},
+          {"event", "mining.subscribe"},
+          {"subscription", {
+              {"extranonce1", "01020304"},
+              {"extranonce2_size", 4}}}
+      });
+
+  logger.append_jsonl(
+      "stratum_jobs.jsonl",
+      {
+          {"schema_version", 1},
+          {"event", "mining.notify"},
+          {"stratum_job", {
+              {"job_id", "job-1"},
+              {"prevhash", std::string(64, '0')}}}
+      });
+
+  const auto archive_path =
+      directory / "stratum_jobs.jsonl";
+
+  REQUIRE(std::filesystem::exists(archive_path));
+
+  std::ifstream input(
+      archive_path,
+      std::ios::binary);
+
+  REQUIRE(input.good());
+
+  std::string first_line;
+  std::string second_line;
+  std::string third_line;
+
+  REQUIRE(
+      static_cast<bool>(
+          std::getline(input, first_line)));
+
+  REQUIRE(
+      static_cast<bool>(
+          std::getline(input, second_line)));
+
+  REQUIRE(
+      !static_cast<bool>(
+          std::getline(input, third_line)));
+
+  const auto first =
+      nlohmann::json::parse(first_line);
+
+  const auto second =
+      nlohmann::json::parse(second_line);
+
+  REQUIRE_EQ(
+      first.at("event").get<std::string>(),
+      "mining.subscribe");
+
+  REQUIRE_EQ(
+      first.at("subscription")
+          .at("extranonce1")
+          .get<std::string>(),
+      "01020304");
+
+  REQUIRE_EQ(
+      second.at("event").get<std::string>(),
+      "mining.notify");
+
+  REQUIRE_EQ(
+      second.at("stratum_job")
+          .at("job_id")
+          .get<std::string>(),
+      "job-1");
+
+  input.close();
   std::filesystem::remove_all(directory);
 }
 

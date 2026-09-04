@@ -13,6 +13,7 @@ int main(int argc, char** argv) {
     std::string specimen = "genesis";
     std::optional<std::string> campaign;
     std::optional<unsigned> save_full_trace_bit;
+    std::optional<unsigned> save_context_id;
     bool specimen_was_set = false;
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
@@ -32,12 +33,27 @@ int main(int argc, char** argv) {
               "--save-full-trace-bit must be an integer in [0,31]");
         }
         save_full_trace_bit = static_cast<unsigned>(bit);
+      } else if (argument == "--save-context-full-trace" && i + 2 < argc) {
+        const std::string context_value = argv[++i];
+        const std::string bit_value = argv[++i];
+        std::size_t context_parsed = 0U;
+        std::size_t bit_parsed = 0U;
+        const auto context = std::stoul(context_value, &context_parsed);
+        const auto bit = std::stoul(bit_value, &bit_parsed);
+        if (context_parsed != context_value.size() || context >= 64U ||
+            bit_parsed != bit_value.size() || bit >= 32U) {
+          throw std::invalid_argument(
+              "--save-context-full-trace requires CONTEXT_ID in [0,63] and BIT in [0,31]");
+        }
+        save_context_id = static_cast<unsigned>(context);
+        save_full_trace_bit = static_cast<unsigned>(bit);
       } else if (argument == "--help") {
         std::cout << "Usage: sha256_whitebox [--output-dir PATH] "
                      "[--specimen genesis|genesis-nonce-plus-1|"
                      "genesis-nonce-bit0-flip|all] "
                      "[--campaign nonce-single-bit-32 "
-                     "[--save-full-trace-bit N]]\n";
+                     "[--save-full-trace-bit N]|merkle-context-transfer-64 "
+                     "[--save-context-full-trace CONTEXT_ID BIT]]\n";
         return 0;
       } else {
         throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -48,8 +64,37 @@ int main(int argc, char** argv) {
         throw std::invalid_argument(
             "--campaign and --specimen are mutually exclusive");
       }
-      if (*campaign != "nonce-single-bit-32") {
+      if (*campaign != "nonce-single-bit-32" &&
+          *campaign != "merkle-context-transfer-64") {
         throw std::invalid_argument("unknown campaign: " + *campaign);
+      }
+      if (*campaign == "merkle-context-transfer-64") {
+        const auto artifacts =
+            srm::research::whitebox::build_merkle_context_transfer_campaign(
+                64U, [](const unsigned context, const unsigned bit) {
+                  std::cout << "[WHITEBOX 64x32] context " << context
+                            << "/63 bit " << bit << "/31 ...\n";
+                });
+        srm::research::whitebox::write_merkle_context_transfer_campaign(
+            artifacts, output_directory);
+        const auto campaign_directory = std::filesystem::absolute(
+            output_directory / "merkle_context_transfer_64");
+        std::cout << "[WHITEBOX 64x32] validation: "
+                  << artifacts.aggregate.at("audit").at("status").get<std::string>()
+                  << '\n'
+                  << "[WHITEBOX 64x32] experiments: 2048, pairwise rows: 496, "
+                     "per-bit-round rows: 6144\n"
+                  << "[WHITEBOX 64x32] artifacts: "
+                  << campaign_directory.string() << '\n';
+        if (save_context_id && save_full_trace_bit) {
+          srm::research::whitebox::write_merkle_context_transfer_full_trace(
+              *save_context_id, *save_full_trace_bit, output_directory);
+        }
+        return 0;
+      }
+      if (save_context_id) {
+        throw std::invalid_argument(
+            "--save-context-full-trace requires --campaign merkle-context-transfer-64");
       }
       const auto artifacts =
           srm::research::whitebox::build_genesis_nonce_single_bit_campaign(

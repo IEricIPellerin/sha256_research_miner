@@ -1137,8 +1137,92 @@ struct MiningController::Impl {
     safe_checkpoint("sauvegarde au lancement du job impossible");
   }
 
+  void append_stratum_archive(nlohmann::json record) {
+    try {
+      logger.append_jsonl(
+          "stratum_jobs.jsonl",
+          std::move(record));
+    } catch (const std::exception& error) {
+      event(
+          "[STRATUM ARCHIVE] sauvegarde impossible: " +
+          std::string(error.what()));
+    }
+  }
+
+  void archive_stratum_subscription(
+      const std::string& value,
+      const unsigned size) {
+    append_stratum_archive({
+        {"schema_version", 1},
+        {"event", "mining.subscribe"},
+        {"received_timestamp_utc",
+         logging::ResultLogger::utc_now()},
+        {"source", {
+            {"mode", config::mode_name(config.mode)},
+            {"host", config.ckpool.host},
+            {"port", config.ckpool.port}}},
+        {"subscription", {
+            {"extranonce1", value},
+            {"extranonce2_size", size}}}
+    });
+  }
+
+  void archive_stratum_notify(
+      const stratum::StratumJob& job) {
+    nlohmann::json subscription = {
+        {"available", subscribed},
+        {"extranonce1", nullptr},
+        {"extranonce2_size", nullptr}
+    };
+
+    nlohmann::json work_fingerprint = nullptr;
+
+    if (subscribed) {
+      subscription["extranonce1"] = extranonce1;
+      subscription["extranonce2_size"] =
+          extranonce2_size;
+
+      work_fingerprint =
+          live_work_fingerprint(
+              job,
+              extranonce1,
+              extranonce2_size);
+    }
+
+    append_stratum_archive({
+        {"schema_version", 1},
+        {"event", "mining.notify"},
+        {"received_timestamp_utc",
+         logging::ResultLogger::utc_now()},
+        {"source", {
+            {"mode", config::mode_name(config.mode)},
+            {"host", config.ckpool.host},
+            {"port", config.ckpool.port}}},
+        {"connection_state", {
+            {"subscribed", subscribed},
+            {"authorized", authorized},
+            {"share_difficulty", share_difficulty}}},
+        {"subscription", std::move(subscription)},
+        {"stratum_job", {
+            {"job_id", job.job_id},
+            {"clean_jobs", job.clean_jobs},
+            {"prevhash", job.prevhash},
+            {"coinbase1", job.coinbase1},
+            {"coinbase2", job.coinbase2},
+            {"merkle_branches",
+             job.merkle_branches},
+            {"version", job.version},
+            {"nbits", job.nbits},
+            {"ntime", job.ntime}}},
+        {"work_fingerprint",
+         std::move(work_fingerprint)}
+    });
+  }
+
   void on_job(const stratum::StratumJob& job) {
     std::scoped_lock lock(control_mutex);
+
+    archive_stratum_notify(job);
     launch_job(job);
   }
 
@@ -1150,10 +1234,24 @@ struct MiningController::Impl {
                                     config.gpu.profile);
     stratum::StratumClient::Callbacks callbacks;
     callbacks.event = [this](const std::string& text) { event(text); };
-    callbacks.subscribed = [this](const std::string& value, const unsigned size) {
+    callbacks.subscribed = [this](
+        const std::string& value,
+        const unsigned size) {
       std::scoped_lock lock(control_mutex);
-      extranonce1 = value; extranonce2_size = size; subscribed = true;
-      if (pending_job && authorized) { auto job = *pending_job; pending_job.reset(); launch_job(job); }
+
+      extranonce1 = value;
+      extranonce2_size = size;
+      subscribed = true;
+
+      archive_stratum_subscription(
+          extranonce1,
+          extranonce2_size);
+
+      if (pending_job && authorized) {
+        auto job = *pending_job;
+        pending_job.reset();
+        launch_job(job);
+      }
     };
     callbacks.authorized = [this](const bool accepted) {
       std::scoped_lock lock(control_mutex);

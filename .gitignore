@@ -11,3 +11,4 @@
 /state/*.tmp
 /state/mock_state.json
 /state/live_state.json
+/results/*.jsonl

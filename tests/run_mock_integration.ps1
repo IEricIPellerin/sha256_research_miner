@@ -56,6 +56,83 @@ try {
     if ($acceptedAudits.Count -lt 1 -or $rejectedAudits.Count -lt 1) {
       throw "mock integration did not durably update the accepted and rejected share audits"
     }
+
+    $stratumArchivePath =
+      Join-Path $testResultsDirectory 'stratum_jobs.jsonl'
+
+    if (-not [IO.File]::Exists($stratumArchivePath)) {
+      throw 'Stratum JSONL archive was not created'
+    }
+
+    $stratumArchiveText =
+      [IO.File]::ReadAllText($stratumArchivePath)
+
+    if ($stratumArchiveText -match '"password"') {
+      throw 'Stratum JSONL archive contains a password field'
+    }
+
+    $stratumEvents = @(
+      Get-Content -LiteralPath $stratumArchivePath |
+        Where-Object {
+          -not [string]::IsNullOrWhiteSpace($_)
+        } |
+        ForEach-Object {
+          $_ | ConvertFrom-Json
+        }
+    )
+
+    $subscriptionEvents = @(
+      $stratumEvents |
+        Where-Object {
+          $_.event -eq 'mining.subscribe'
+        }
+    )
+
+    $notifyEvents = @(
+      $stratumEvents |
+        Where-Object {
+          $_.event -eq 'mining.notify'
+        }
+    )
+
+    if ($subscriptionEvents.Count -lt 1) {
+      throw 'Stratum archive contains no mining.subscribe event'
+    }
+
+    if ($notifyEvents.Count -lt 1) {
+      throw 'Stratum archive contains no mining.notify event'
+    }
+
+    $usableNotifyEvents = @(
+      $notifyEvents |
+        Where-Object {
+          $_.subscription.available -eq $true -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.subscription.extranonce1) -and
+          $_.subscription.extranonce2_size -gt 0 -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.job_id) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.prevhash) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.coinbase1) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.coinbase2) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.version) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.nbits) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.stratum_job.ntime) -and
+          -not [string]::IsNullOrWhiteSpace(
+            $_.work_fingerprint)
+        }
+    )
+
+    if ($usableNotifyEvents.Count -lt 1) {
+      throw 'Stratum archive contains no complete replayable mining.notify context'
+    }
+
     $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
     $sessionText = ((Get-ChildItem -LiteralPath $testResultsDirectory -Filter 'session_*.log') |
       ForEach-Object {

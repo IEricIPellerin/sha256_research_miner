@@ -23,6 +23,8 @@ class ResultLogger {
   std::filesystem::path save_share_audit(mining::Solution& solution);
   void update_share_audit(const mining::Solution& solution);
   void save_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) const;
+  void append_jsonl(const std::filesystem::path& filename,
+                    const nlohmann::json& value) const;
 
   static std::string utc_now();
 

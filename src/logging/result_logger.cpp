@@ -103,6 +103,33 @@ void ResultLogger::save_json_atomic(const std::filesystem::path& path, const nlo
   checkpoint::StateStore(path).save(value);
 }
 
+void ResultLogger::append_jsonl(
+    const std::filesystem::path& filename,
+    const nlohmann::json& value) const {
+  std::scoped_lock lock(mutex_);
+
+  const auto path = directory_ / filename;
+
+  std::ofstream output(
+      path,
+      std::ios::binary | std::ios::app);
+
+  if (!output) {
+    throw checkpoint::PersistenceError(
+        "cannot open JSONL archive " +
+        platform::path_utf8(path));
+  }
+
+  output << value.dump() << '\n';
+  output.flush();
+
+  if (!output) {
+    throw checkpoint::PersistenceError(
+        "cannot append JSONL archive " +
+        platform::path_utf8(path));
+  }
+}
+
 std::string ResultLogger::utc_now() {
   const auto now = std::chrono::system_clock::now();
   const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;

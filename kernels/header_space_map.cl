@@ -99,6 +99,19 @@ int hs_meets_target(__private const uint value[8], __global const uchar* target)
   return 1;
 }
 
+uint hs_leading_zero_bits(__private const uint value[8]) {
+  uint total=0U;
+  for(uint i=0U;i<8U;++i) {
+    if(value[i]==0U) {
+      total+=32U;
+      continue;
+    }
+    total+=(uint)clz(value[i]);
+    break;
+  }
+  return total;
+}
+
 __kernel void map_header_space_zones(__global const uchar* prefix,
                                      __global const ulong* zone_starts,
                                      __global const ulong* zone_counts,
@@ -125,7 +138,7 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
     hs_sha256d(prefix,midstate,nonce,digest);
     uint value[8];
     for(uint i=0;i<8U;++i) value[i]=hs_bswap(digest[7U-i]);
-    const uint zeros=clz(value[0]);
+    const uint zeros=hs_leading_zero_bits(value);
     if(zeros>=26U) ++tails[0];
     if(zeros>=28U) ++tails[1];
     if(zeros>=30U) ++tails[2];

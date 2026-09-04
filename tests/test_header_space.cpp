@@ -59,6 +59,13 @@ TEST_CASE("Header-space leading-zero thresholds use the Bitcoin PoW integer") {
   REQUIRE_EQ(counts32[2], 1U);
   REQUIRE_EQ(counts32[3], 1U);
   REQUIRE_EQ(counts32[4], 0U);
+
+  value[1] = 0x20000000U;
+  REQUIRE_EQ(hs::leading_zero_bits(value), 34U);
+  const auto counts34 = hs::classify_tail(value);
+  REQUIRE_EQ(counts34[3], 1U);
+  REQUIRE_EQ(counts34[4], 1U);
+  REQUIRE_EQ(counts34[5], 0U);
 }
 
 TEST_CASE("Header-space zone layout is absolute, contiguous, and includes uint32 max") {
@@ -142,4 +149,12 @@ TEST_CASE("Header-space OpenCL zone statistics equal CPU including upper nonce e
   const auto gpu_edge = scanner.scan(header, 0xfffffffeULL, 2U, 1U, 2U);
   const auto cpu_edge = hs::scan_cpu(header, 0xfffffffeULL, 2U, 1U);
   REQUIRE(hs::same_statistics(cpu_edge, gpu_edge.zones));
+
+  const auto gpu_deep = scanner.scan(header, 2083236893U, 1U, 1U, 1U);
+  const auto cpu_deep = hs::scan_cpu(header, 2083236893U, 1U, 1U);
+  REQUIRE(hs::same_statistics(cpu_deep, gpu_deep.zones));
+  for (std::size_t i = 0; i < hs::kThresholdBits.size(); ++i) {
+    REQUIRE_EQ(cpu_deep.front().counts[i], 1U);
+    REQUIRE_EQ(gpu_deep.zones.front().counts[i], 1U);
+  }
 }

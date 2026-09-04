@@ -105,6 +105,10 @@ std::filesystem::path project_root(const std::filesystem::path& config) {
 cc::CampaignRequest request_from(const Arguments& args, const nlohmann::json& config) {
   cc::CampaignRequest request;
   request.profile = args.profile;
+  const auto scientific = config.value("scientific", nlohmann::json::object());
+  request.discovery_fraction = scientific.value("discovery_fraction", 0.60);
+  request.validation_fraction = scientific.value("validation_fraction", 0.20);
+  request.holdout_fraction = scientific.value("holdout_fraction", 0.20);
   const auto profiles = config.value("profiles", nlohmann::json::object());
   if (args.profile != "CUSTOM") {
     if (!profiles.contains(args.profile)) throw std::invalid_argument("unknown profile: " + args.profile);

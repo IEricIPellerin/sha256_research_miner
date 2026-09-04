@@ -133,16 +133,6 @@ std::unordered_set<std::string> ids_in_jsonl(const std::filesystem::path& path,
   return result;
 }
 
-double quality_bits(const header_space::PowValue& value) {
-  for (std::size_t word = 0; word < value.size(); ++word) {
-    if (value[word] == 0) continue;
-    const auto log_value = std::log2(static_cast<double>(value[word])) +
-        static_cast<double>((value.size() - 1U - word) * 32U);
-    return 256.0 - log_value;
-  }
-  return std::numeric_limits<double>::infinity();
-}
-
 nlohmann::json counts_json(const header_space::TailCounts& counts) {
   nlohmann::json result = nlohmann::json::object();
   for (std::size_t i = 0; i < counts.size(); ++i) {
@@ -308,6 +298,15 @@ nlohmann::json ranking_metrics(const std::vector<JoinedRow>& input,
 
 }  // namespace
 
+double quality_bits(const header_space::PowValue& value) {
+  long double numeric = 0.0L;
+  for (const auto word : value) {
+    numeric = std::ldexp(numeric, 32) + static_cast<long double>(word);
+  }
+  if (numeric == 0.0L) return std::numeric_limits<double>::infinity();
+  return static_cast<double>(256.0L - std::log2(numeric));
+}
+
 std::vector<ArchivedContext> load_archive(const std::filesystem::path& archive,
                                           std::size_t* rejected_lines) {
   std::ifstream input(archive, std::ios::binary);
@@ -418,8 +417,23 @@ CampaignPlan make_plan(const std::vector<ArchivedContext>& archive,
                        CampaignRequest request,
                        BenchmarkResult measured) {
   if (archive.empty()) throw std::invalid_argument("cannot plan from an empty archive");
+  const std::array fractions{
+      request.discovery_fraction, request.validation_fraction, request.holdout_fraction};
+  for (const auto fraction : fractions) {
+    if (!std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0) {
+      throw std::invalid_argument("partition fractions must be finite values in [0,1]");
+    }
+  }
+  if (std::abs(std::accumulate(fractions.begin(), fractions.end(), 0.0) - 1.0) > 1e-9) {
+    throw std::invalid_argument("discovery/validation/holdout fractions must sum to 1.0");
+  }
   std::map<std::string, std::vector<const ArchivedContext*>> grouped;
   for (const auto& context : archive) grouped[context.job.prevhash].push_back(&context);
+  for (auto& [unused, contexts] : grouped) {
+    std::stable_sort(contexts.begin(), contexts.end(), [](const auto* left, const auto* right) {
+      return left->received_timestamp_utc < right->received_timestamp_utc;
+    });
+  }
   std::vector<std::string> prevhashes;
   for (const auto& [prevhash, unused] : grouped) prevhashes.push_back(prevhash);
   std::mt19937_64 random(request.seed);
@@ -428,13 +442,45 @@ CampaignPlan make_plan(const std::vector<ArchivedContext>& archive,
       : std::min(request.prevhash_count, prevhashes.size());
   prevhashes.resize(wanted_prevhash);
 
+  std::size_t available_contexts = 0;
+  for (const auto& prevhash : prevhashes) available_contexts += grouped.at(prevhash).size();
+  const auto wanted_contexts = std::min(
+      request.context_count == 0U ? wanted_prevhash : request.context_count,
+      available_contexts);
+  std::map<std::string, std::size_t> quotas;
+  std::size_t assigned = 0;
+  while (assigned < wanted_contexts) {
+    bool added = false;
+    for (const auto& prevhash : prevhashes) {
+      if (quotas[prevhash] < grouped.at(prevhash).size() && assigned < wanted_contexts) {
+        ++quotas[prevhash];
+        ++assigned;
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+  std::map<std::string, std::vector<const ArchivedContext*>> representatives;
+  for (const auto& prevhash : prevhashes) {
+    const auto& candidates = grouped.at(prevhash);
+    const auto count = quotas[prevhash];
+    auto& chosen = representatives[prevhash];
+    chosen.reserve(count);
+    std::mt19937_64 group_random(seed_for(request.seed, prevhash));
+    for (std::size_t stratum = 0; stratum < count; ++stratum) {
+      const auto begin = stratum * candidates.size() / count;
+      const auto end = (stratum + 1U) * candidates.size() / count;
+      std::uniform_int_distribution<std::size_t> pick(begin, end - 1U);
+      chosen.push_back(candidates[pick(group_random)]);
+    }
+  }
+
   std::vector<const ArchivedContext*> selected;
   std::size_t depth = 0;
-  const auto wanted_contexts = request.context_count == 0U ? wanted_prevhash : request.context_count;
   while (selected.size() < wanted_contexts) {
     bool added = false;
     for (const auto& prevhash : prevhashes) {
-      auto& candidates = grouped.at(prevhash);
+      auto& candidates = representatives.at(prevhash);
       if (depth < candidates.size() && selected.size() < wanted_contexts) {
         selected.push_back(candidates[depth]);
         added = true;
@@ -474,16 +520,37 @@ CampaignPlan make_plan(const std::vector<ArchivedContext>& archive,
   plan.estimated_seconds = static_cast<double>(plan.total_hashes) / plan.benchmark.hashes_per_second;
   plan.estimated_disk_bytes = total * 8192U + selected.size() * 4096U + 16384U;
 
+  std::array<std::size_t, 3> partition_counts{};
+  std::array<double, 3> remainders{};
+  std::size_t partitioned = 0;
+  for (std::size_t i = 0; i < fractions.size(); ++i) {
+    const auto exact = fractions[i] * prevhashes.size();
+    partition_counts[i] = static_cast<std::size_t>(std::floor(exact));
+    remainders[i] = exact - partition_counts[i];
+    partitioned += partition_counts[i];
+  }
+  while (partitioned < prevhashes.size()) {
+    const auto best = static_cast<std::size_t>(std::distance(
+        remainders.begin(), std::max_element(remainders.begin(), remainders.end())));
+    ++partition_counts[best];
+    remainders[best] = -1.0;
+    ++partitioned;
+  }
+  const auto positive_partitions = static_cast<std::size_t>(
+      std::count_if(fractions.begin(), fractions.end(), [](const double value) { return value > 0.0; }));
+  if (prevhashes.size() >= positive_partitions) {
+    for (std::size_t empty = 0; empty < fractions.size(); ++empty) {
+      if (fractions[empty] == 0.0 || partition_counts[empty] != 0U) continue;
+      const auto donor = static_cast<std::size_t>(std::distance(
+          partition_counts.begin(), std::max_element(partition_counts.begin(), partition_counts.end())));
+      --partition_counts[donor];
+      ++partition_counts[empty];
+    }
+  }
   std::unordered_map<std::string, std::string> partition;
   for (std::size_t i = 0; i < prevhashes.size(); ++i) {
-    const auto fraction = static_cast<double>(i) / std::max<std::size_t>(1U, prevhashes.size());
-    partition[prevhashes[i]] = fraction < 0.60 ? "discovery" :
-        (fraction < 0.80 ? "validation" : "holdout");
-  }
-  if (prevhashes.size() >= 3U) {
-    partition[prevhashes[0]] = "discovery";
-    partition[prevhashes[1]] = "validation";
-    partition[prevhashes[2]] = "holdout";
+    partition[prevhashes[i]] = i < partition_counts[0] ? "discovery" :
+        (i < partition_counts[0] + partition_counts[1] ? "validation" : "holdout");
   }
 
   const auto base = total / selected.size();
@@ -601,9 +668,12 @@ std::filesystem::path create_campaign(const CampaignPlan& plan,
           {"prevhash_count", plan.request.prevhash_count},
           {"context_count", plan.request.context_count}}},
       {"archive_source", std::filesystem::absolute(archive_source).string()},
-      {"sampling", {{"context_strategy", "seeded_balanced_by_prevhash"},
+      {"sampling", {{"context_strategy", "seeded_temporal_stratification_balanced_by_prevhash"},
                     {"extranonce2_strategy", "seeded_stratified_uniform_high_byte"}}},
       {"partitions", {{"unit", "complete_prevhash"}, {"names", {"discovery", "validation", "holdout"}},
+                      {"fractions", {{"discovery", plan.request.discovery_fraction},
+                                     {"validation", plan.request.validation_fraction},
+                                     {"holdout", plan.request.holdout_fraction}}},
                       {"overlap_allowed", false}}},
       {"scan", {{"nonce_start", 0}, {"nonce_count", header_space::kNonceSpaceSize},
                 {"complete_B_J_e_required", true}, {"exclusive_variable", "nonce_uint32"}}},
@@ -719,7 +789,7 @@ int run_campaign(const std::filesystem::path& directory,
                 << "Erreurs/retries      : 0 / 0\n" << std::flush;
     }
   }
-  if (completed.size() == total) analyze_campaign(directory, true);
+  if (completed.size() == total) analyze_campaign(directory, false);
   return completed.size() == total ? 0 : 2;
 }
 
@@ -790,6 +860,8 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
     while (std::getline(input, line)) if (!line.empty()) {
       const auto label = nlohmann::json::parse(line);
       if (!label.value("complete", false)) continue;
+      const auto partition = label.at("partition").get<std::string>();
+      if (!finalize_holdout && partition == "holdout") continue;
       const auto id = label.at("block_id").get<std::string>();
       const auto found = features.find(id);
       if (found == features.end()) throw std::runtime_error("label has no PRE_SCAN feature row: " + id);
@@ -801,7 +873,7 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
       row.block = id;
       row.context = label.at("work_fingerprint").get<std::string>();
       row.prevhash = label.at("prevhash_group").get<std::string>();
-      row.partition = label.at("partition").get<std::string>();
+      row.partition = partition;
       row.extranonce2 = label.at("extranonce2").get<std::string>();
       row.quality = label.at("quality").at("quality_bits").get<double>();
       row.difficulty = label.at("quality").at("best_difficulty").get<double>();
@@ -939,7 +1011,6 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
   };
   nlohmann::json summary = {
       {"schema_version", 1}, {"campaign_id", manifest.value("campaign_id", directory.filename().string())},
-      {"generated_at_utc", logging::ResultLogger::utc_now()},
       {"holdout_finalized", finalize_holdout},
       {"corpus", {{"prevhashes", prevhashes.size()}, {"contexts", contexts.size()},
                   {"extranonce2", rows.size()}, {"complete_blocks", rows.size()},
@@ -990,8 +1061,11 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
          << "\n\n## Contrôle random-oracle\n\n"
          << (compatible ? "Compatible avec le comportement uniforme aux seuils pré-déclarés."
                         : "Anomalie statistique à investiguer; aucune conclusion cryptanalytique automatique.")
-         << "\n\n## Validation et ranking\n\nLes résultats discovery, validation et holdout sont séparés par prevhash complet. "
-            "Les courbes top-k/lift sont dans analysis_summary.json.\n\n"
+         << "\n\n## Validation et ranking\n\n"
+         << (finalize_holdout
+                ? "Le holdout a été ouvert explicitement; les partitions restent séparées par prevhash complet. "
+                : "Le holdout reste scellé; aucune de ses valeurs post-scan ne contribue à cette analyse. ")
+         << "Les courbes top-k/lift sont dans analysis_summary.json.\n\n"
          << "## Conclusion\n\n**" << conclusion << "**\n";
   {
     std::ofstream output(directory / "report.md", std::ios::binary | std::ios::trunc);

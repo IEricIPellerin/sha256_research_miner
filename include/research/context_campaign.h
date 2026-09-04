@@ -29,6 +29,9 @@ struct CampaignRequest {
   std::size_t prevhash_count{0};
   std::size_t context_count{0};
   std::optional<std::size_t> blocks_per_context;
+  double discovery_fraction{0.60};
+  double validation_fraction{0.20};
+  double holdout_fraction{0.20};
 };
 
 struct BenchmarkResult {
@@ -78,6 +81,7 @@ std::vector<std::string> sample_extranonce2(std::uint64_t seed,
                                             const std::string& work_fingerprint,
                                             unsigned size,
                                             std::size_t count);
+double quality_bits(const header_space::PowValue& value);
 
 std::filesystem::path create_campaign(const CampaignPlan& plan,
                                       const std::filesystem::path& output_root,

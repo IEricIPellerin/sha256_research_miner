@@ -24,7 +24,7 @@ Avant `new`, l'outil benchmarke un vrai header reconstruit et affiche le nombre 
 
 ## Sélection et séparation scientifique
 
-- Les contextes sont dédupliqués par `work_fingerprint`, équilibrés entre prevhash puis sélectionnés par seed.
+- Les contextes sont dédupliqués par `work_fingerprint`, équilibrés entre prevhash puis sélectionnés par stratification temporelle seedée dans chaque prevhash.
 - Les extranonce2 respectent la taille archivée et utilisent un PRNG déterministe avec stratification du premier octet; une suite contiguë n'est jamais le corpus unique.
 - Discovery, validation et holdout possèdent des prevhash entièrement disjoints. Avec moins de trois prevhash, l'outil avertit que les trois partitions ne peuvent pas être constituées.
 - Les seuils de queue et métriques principales sont pré-déclarés dans le manifeste avant le premier scan.
@@ -49,5 +49,7 @@ Le label n'est écrit avec `complete=true` qu'après `2^32` hashes. Au redémarr
 ## Analyse
 
 `analyze` relit les données sans scanner. Le JSON produit sépare les partitions, contrôle les queues contre leur espérance binomiale/Poisson, rapporte les corrélations simples et les baselines de ranking, les top 1/5/10/25 %, le lift et le coût. Les résultats discovery sont marqués exploratoires. Aucun avantage n'est revendiqué sans réplication sur prevhash holdout.
+
+La fin d'une campagne ne finalise jamais le holdout: l'analyse automatique reste limitée à discovery/validation. L'ouverture est une action irréversible et explicite avec `sha256_context_analyzer.exe analyze --campaign <dossier> --finalize-holdout`; `holdout_evaluation.json` n'est créé qu'à cette occasion et n'est jamais remplacé.
 
 Le premier pipeline conserve le minimum exact et les compteurs de queue/réseau mais pas encore un top-K exact de 32 ou 64 hashes par bloc. Les modèles complexes et intervalles permutationnels restent volontairement absents tant que le corpus labellisé ne justifie pas leur coût et leur risque de sur-ajustement.

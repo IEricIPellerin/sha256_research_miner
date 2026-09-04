@@ -11,7 +11,7 @@ Le nonce numérique est sérialisé little-endian aux octets 76 à 79. Le vecteu
 
 ## Architecture GPU
 
-Un workgroup possède exactement une zone statistique. Chaque work-item calcule une sous-suite disjointe de nonces, conserve son minimum 256 bits et sept compteurs 64 bits privés, puis le workgroup effectue une réduction en mémoire locale. Une seule fiche compacte par zone est copiée vers le CPU. Il n'y a ni atomic globale par hash, ni transfert de digest par nonce.
+Un workgroup possède exactement une zone statistique. Chaque work-item calcule une sous-suite disjointe de nonces, conserve son minimum 256 bits, sept compteurs de queue 64 bits et le compteur exact sous la target réseau, puis le workgroup effectue une réduction en mémoire locale. Une seule fiche compacte par zone est copiée vers le CPU. Il n'y a ni atomic globale par hash, ni transfert de digest par nonce.
 
 La taille de zone statistique (`--zone-size`, `2^20` par défaut) est indépendante du batch GPU (`--batch-zones`, 256 par défaut). Avec `--local-size 64`, un batch plein de 256 zones utilise un global size de 16 384 work-items. Le découpage en batches borne la durée d'un kernel sous Windows sans changer la carte produite.
 
@@ -61,6 +61,6 @@ La première version ne reprend pas un espace incomplet à l'intérieur d'une ex
 
 ## Protocole scientifique
 
-Le scanner mesure; il ne qualifie aucune zone de « favorable » et ne fait aucune conclusion cryptanalytique. Les histogrammes complets de leading zeros et de préfixes 8 bits sont reportés pour préserver une réduction légère sans atomics globaux par hash.
+Le scanner mesure; il ne qualifie aucune zone de « favorable » et ne fait aucune conclusion cryptanalytique. Les seuils T26, T28, T30, T32, T34, T36 et T38 correspondent, pour un bloc complet, à environ 64, 16, 4, 1, 1/4, 1/16 et 1/64 hits attendus. Les histogrammes complets de leading zeros et de préfixes 8 bits restent reportés pour préserver une réduction légère sans atomics globaux par hash.
 
 Toute campagne multi-header future doit séparer les espaces en ensembles `DISCOVERY` et `HOLDOUT` avant analyse. Une règle issue de `DISCOVERY` doit être gelée avant l'ouverture de `HOLDOUT`. Les comparaisons de milliers de zones, plusieurs seuils et plusieurs headers exigent aussi une correction explicite des tests multiples.

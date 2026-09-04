@@ -38,9 +38,12 @@ try {
     $rejectedAudits = @()
     do {
       Start-Sleep -Milliseconds 100
-      $audits = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter 'share_audit_*.json' -ErrorAction SilentlyContinue |
+      $auditDirectory = Join-Path $testResultsDirectory 'share_audit_recent'
+      $audits = @(Get-ChildItem -LiteralPath $auditDirectory -Filter 'shares_*.jsonl' -ErrorAction SilentlyContinue |
         ForEach-Object {
-          try { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } catch { $null }
+          Get-Content -LiteralPath $_.FullName | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch { $null }
+          }
         })
       $acceptedAudits = @($audits | Where-Object {
         $_.submission.status -eq 'accepted' -and

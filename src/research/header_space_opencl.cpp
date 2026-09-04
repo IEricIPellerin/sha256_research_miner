@@ -1,14 +1,18 @@
 //src\research\header_space_opencl.cpp
 #include "research/header_space.h"
 
+#include "bitcoin/difficulty.h"
+
 #include <algorithm>
 #include <bit>
 #include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <iomanip>
 #include <limits>
 #include <stdexcept>
+#include <sstream>
 #include <tuple>
 #include <utility>
 
@@ -30,6 +34,12 @@ std::string normalized(std::string value) {
     return static_cast<char>(std::tolower(c));
   });
   return value;
+}
+
+std::string hex_u32(const std::uint32_t value) {
+  std::ostringstream output;
+  output << std::hex << std::setfill('0') << std::setw(8) << value;
+  return output.str();
 }
 
 #ifdef SRM_HAS_OPENCL
@@ -229,7 +239,7 @@ GpuScanner::GpuScanner(std::string device_selector,
   if (local_size > impl_->info.max_workgroup_size) {
     throw std::invalid_argument("--local-size exceeds CL_DEVICE_MAX_WORK_GROUP_SIZE");
   }
-  constexpr std::size_t minimum_words_per_item = 9U * sizeof(cl_uint) + 7U * sizeof(cl_ulong);
+  constexpr std::size_t minimum_words_per_item = 9U * sizeof(cl_uint) + 8U * sizeof(cl_ulong);
   if (local_size > impl_->info.local_memory_bytes / minimum_words_per_item) {
     throw std::invalid_argument("--local-size requires more local memory than the selected GPU provides");
   }
@@ -292,6 +302,7 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
 
   cl_int error = CL_SUCCESS;
   cl_mem prefix_buffer{};
+  cl_mem network_target_buffer{};
   cl_mem starts_buffer{};
   cl_mem counts_buffer{};
   cl_mem minima_buffer{};
@@ -301,6 +312,7 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
     if (minima_buffer) clReleaseMemObject(minima_buffer);
     if (counts_buffer) clReleaseMemObject(counts_buffer);
     if (starts_buffer) clReleaseMemObject(starts_buffer);
+    if (network_target_buffer) clReleaseMemObject(network_target_buffer);
     if (prefix_buffer) clReleaseMemObject(prefix_buffer);
   };
 
@@ -308,6 +320,12 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
     prefix_buffer = clCreateBuffer(impl_->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 76,
                                    const_cast<std::uint8_t*>(header.data()), &error);
     cl_require(error, "header-space prefix buffer");
+    const auto network_target = bitcoin::target_from_nbits(hex_u32(decode_header(header).nbits));
+    network_target_buffer = clCreateBuffer(
+        impl_->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        network_target.big_endian.size(),
+        const_cast<std::uint8_t*>(network_target.big_endian.data()), &error);
+    cl_require(error, "header-space network target buffer");
     starts_buffer = clCreateBuffer(impl_->context, CL_MEM_READ_ONLY,
                                    maximum_batch * sizeof(cl_ulong), nullptr, &error);
     cl_require(error, "header-space zone starts buffer");
@@ -318,19 +336,21 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
                                    maximum_batch * 9U * sizeof(cl_uint), nullptr, &error);
     cl_require(error, "header-space minima buffer");
     tail_counts_buffer = clCreateBuffer(impl_->context, CL_MEM_WRITE_ONLY,
-                                        maximum_batch * 7U * sizeof(cl_ulong), nullptr, &error);
+                                        maximum_batch * 8U * sizeof(cl_ulong), nullptr, &error);
     cl_require(error, "header-space tail counts buffer");
 
     cl_require(clSetKernelArg(impl_->kernel, 0, sizeof(prefix_buffer), &prefix_buffer), "prefix arg");
     cl_require(clSetKernelArg(impl_->kernel, 1, sizeof(starts_buffer), &starts_buffer), "starts arg");
     cl_require(clSetKernelArg(impl_->kernel, 2, sizeof(counts_buffer), &counts_buffer), "counts arg");
-    cl_require(clSetKernelArg(impl_->kernel, 3, sizeof(minima_buffer), &minima_buffer), "minima arg");
-    cl_require(clSetKernelArg(impl_->kernel, 4, sizeof(tail_counts_buffer), &tail_counts_buffer),
+    cl_require(clSetKernelArg(impl_->kernel, 3, sizeof(network_target_buffer), &network_target_buffer),
+               "network target arg");
+    cl_require(clSetKernelArg(impl_->kernel, 4, sizeof(minima_buffer), &minima_buffer), "minima arg");
+    cl_require(clSetKernelArg(impl_->kernel, 5, sizeof(tail_counts_buffer), &tail_counts_buffer),
                "tail counts arg");
     const auto local_minima_bytes = impl_->requested_local_size * 9U * sizeof(cl_uint);
-    const auto local_counts_bytes = impl_->requested_local_size * 7U * sizeof(cl_ulong);
-    cl_require(clSetKernelArg(impl_->kernel, 5, local_minima_bytes, nullptr), "local minima arg");
-    cl_require(clSetKernelArg(impl_->kernel, 6, local_counts_bytes, nullptr), "local counts arg");
+    const auto local_counts_bytes = impl_->requested_local_size * 8U * sizeof(cl_ulong);
+    cl_require(clSetKernelArg(impl_->kernel, 6, local_minima_bytes, nullptr), "local minima arg");
+    cl_require(clSetKernelArg(impl_->kernel, 7, local_counts_bytes, nullptr), "local counts arg");
 
     GpuScanResult result;
     result.device = impl_->info;
@@ -341,7 +361,7 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
     std::vector<cl_ulong> starts(maximum_batch);
     std::vector<cl_ulong> counts(maximum_batch);
     std::vector<cl_uint> minima(maximum_batch * 9U);
-    std::vector<cl_ulong> tail_counts(maximum_batch * 7U);
+    std::vector<cl_ulong> tail_counts(maximum_batch * 8U);
     const auto wall_start = std::chrono::steady_clock::now();
     for (std::size_t offset = 0; offset < layout.size(); offset += maximum_batch) {
       const auto current = std::min(maximum_batch, layout.size() - offset);
@@ -376,7 +396,7 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
                                      current * 9U * sizeof(cl_uint), minima.data(), 0, nullptr, nullptr),
                  "zone minima download");
       cl_require(clEnqueueReadBuffer(impl_->queue, tail_counts_buffer, CL_TRUE, 0,
-                                     current * 7U * sizeof(cl_ulong), tail_counts.data(), 0, nullptr, nullptr),
+                                     current * 8U * sizeof(cl_ulong), tail_counts.data(), 0, nullptr, nullptr),
                  "zone counts download");
       for (std::size_t i = 0; i < current; ++i) {
         ZoneStats zone;
@@ -385,9 +405,10 @@ GpuScanResult GpuScanner::scan(const bitcoin::Header& header,
           zone.minimum_pow_value[word] = minima[i * 9U + word];
         }
         zone.minimum_nonce = minima[i * 9U + 8U];
-        for (std::size_t threshold = 0; threshold < 7; ++threshold) {
-          zone.counts[threshold] = tail_counts[i * 7U + threshold];
+        for (std::size_t threshold = 0; threshold < zone.counts.size(); ++threshold) {
+          zone.counts[threshold] = tail_counts[i * 8U + threshold];
         }
+        zone.network_hits = tail_counts[i * 8U + 7U];
         result.zones.push_back(zone);
       }
       ++result.kernel_launches;

@@ -89,9 +89,20 @@ int hs_precedes(__private const uint left[8], uint left_nonce,
   return left_nonce<right_nonce;
 }
 
+int hs_meets_target(__private const uint value[8], __global const uchar* target) {
+  for(uint i=0;i<8U;++i) {
+    uint word=((uint)target[i*4U]<<24U)|((uint)target[i*4U+1U]<<16U)|
+              ((uint)target[i*4U+2U]<<8U)|(uint)target[i*4U+3U];
+    if(value[i]<word) return 1;
+    if(value[i]>word) return 0;
+  }
+  return 1;
+}
+
 __kernel void map_header_space_zones(__global const uchar* prefix,
                                      __global const ulong* zone_starts,
                                      __global const ulong* zone_counts,
+                                     __global const uchar* network_target,
                                      __global uint* output_minima,
                                      __global ulong* output_counts,
                                      __local uint* local_minima,
@@ -107,7 +118,7 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
   uint minimum[8];
   for(uint i=0;i<8U;++i) minimum[i]=0xffffffffU;
   uint minimum_nonce=0xffffffffU;
-  ulong tails[7]={0UL,0UL,0UL,0UL,0UL,0UL,0UL};
+  ulong tails[8]={0UL,0UL,0UL,0UL,0UL,0UL,0UL,0UL};
   for(ulong offset=(ulong)lid;offset<count;offset+=(ulong)local_size) {
     const uint nonce=(uint)(start+offset);
     uint digest[8];
@@ -115,13 +126,14 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
     uint value[8];
     for(uint i=0;i<8U;++i) value[i]=hs_bswap(digest[7U-i]);
     const uint zeros=clz(value[0]);
-    if(zeros>=8U) ++tails[0];
-    if(zeros>=12U) ++tails[1];
-    if(zeros>=16U) ++tails[2];
-    if(zeros>=20U) ++tails[3];
-    if(zeros>=24U) ++tails[4];
-    if(zeros>=28U) ++tails[5];
-    if(zeros>=32U) ++tails[6];
+    if(zeros>=26U) ++tails[0];
+    if(zeros>=28U) ++tails[1];
+    if(zeros>=30U) ++tails[2];
+    if(zeros>=32U) ++tails[3];
+    if(zeros>=34U) ++tails[4];
+    if(zeros>=36U) ++tails[5];
+    if(zeros>=38U) ++tails[6];
+    if(hs_meets_target(value,network_target)) ++tails[7];
     if(hs_precedes(value,nonce,minimum,minimum_nonce)) {
       for(uint i=0;i<8U;++i) minimum[i]=value[i];
       minimum_nonce=nonce;
@@ -129,10 +141,10 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
   }
 
   const uint minimum_base=lid*9U;
-  const uint count_base=lid*7U;
+  const uint count_base=lid*8U;
   for(uint i=0;i<8U;++i) local_minima[minimum_base+i]=minimum[i];
   local_minima[minimum_base+8U]=minimum_nonce;
-  for(uint i=0;i<7U;++i) local_counts[count_base+i]=tails[i];
+  for(uint i=0;i<8U;++i) local_counts[count_base+i]=tails[i];
   barrier(CLK_LOCAL_MEM_FENCE);
 
   for(uint stride=local_size>>1U;stride>0U;stride>>=1U) {
@@ -148,16 +160,16 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
         for(uint i=0;i<8U;++i) local_minima[minimum_base+i]=right[i];
         local_minima[minimum_base+8U]=right_nonce;
       }
-      const uint right_count_base=(lid+stride)*7U;
-      for(uint i=0;i<7U;++i) local_counts[count_base+i]+=local_counts[right_count_base+i];
+      const uint right_count_base=(lid+stride)*8U;
+      for(uint i=0;i<8U;++i) local_counts[count_base+i]+=local_counts[right_count_base+i];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
   }
 
   if(lid==0U) {
     const uint output_minimum_base=group*9U;
-    const uint output_count_base=group*7U;
+    const uint output_count_base=group*8U;
     for(uint i=0;i<9U;++i) output_minima[output_minimum_base+i]=local_minima[i];
-    for(uint i=0;i<7U;++i) output_counts[output_count_base+i]=local_counts[i];
+    for(uint i=0;i<8U;++i) output_counts[output_count_base+i]=local_counts[i];
   }
 }

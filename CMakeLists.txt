@@ -63,7 +63,8 @@ set(SRM_SOURCES
   src/mining/gpu_miner.cpp
   src/mining/mining_controller.cpp
   src/telemetry/telemetry.cpp
-  src/logging/result_logger.cpp)
+  src/logging/result_logger.cpp
+  src/logging/best_pow_tracker.cpp)
 
 add_library(srm_core ${SRM_SOURCES})
 target_include_directories(srm_core PUBLIC include PRIVATE "${ASIO_INCLUDE_DIR}")
@@ -97,6 +98,7 @@ target_link_libraries(sha256_research_miner PRIVATE srm_core)
 add_library(srm_header_space
   src/research/header_space.cpp
   src/research/header_space_opencl.cpp
+  src/research/context_campaign.cpp
   src/research/sha256d_whitebox.cpp
   src/research/sha256d_whitebox_campaign.cpp
   src/research/sha256d_whitebox_transfer.cpp)
@@ -115,6 +117,9 @@ endif()
 add_executable(sha256_header_space src/header_space_main.cpp)
 target_link_libraries(sha256_header_space PRIVATE srm_header_space nlohmann_json::nlohmann_json)
 
+add_executable(sha256_context_analyzer src/context_analysis_main.cpp)
+target_link_libraries(sha256_context_analyzer PRIVATE srm_header_space nlohmann_json::nlohmann_json)
+
 add_executable(sha256_whitebox src/whitebox_main.cpp)
 target_link_libraries(sha256_whitebox PRIVATE srm_header_space nlohmann_json::nlohmann_json)
 
@@ -127,6 +132,11 @@ add_custom_command(TARGET sha256_header_space POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
           "$<TARGET_FILE_DIR:sha256_header_space>/kernels")
+
+add_custom_command(TARGET sha256_context_analyzer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/kernels"
+          "$<TARGET_FILE_DIR:sha256_context_analyzer>/kernels")
 
 if(SRM_BUILD_TESTS)
   enable_testing()
@@ -141,6 +151,8 @@ if(SRM_BUILD_TESTS)
     tests/test_stratum_parser.cpp
     tests/test_checkpoint.cpp
     tests/test_result_logger.cpp
+    tests/test_best_pow.cpp
+    tests/test_context_campaign.cpp
     tests/test_config.cpp
     tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp

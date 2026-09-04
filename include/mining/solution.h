@@ -34,6 +34,12 @@ struct Solution {
   std::string network_target;
   std::string share_target;
   double share_difficulty{0.0};
+  double hash_difficulty{0.0};
+  double network_difficulty{0.0};
+  double network_difficulty_ratio{0.0};
+  std::string worker;
+  std::uint64_t total_hashes_at_detection{0};
+  std::uint64_t uptime_ms_at_detection{0};
   std::string detected_timestamp_utc;
   std::string submitted_timestamp_utc;
   std::string response_timestamp_utc;
@@ -44,6 +50,8 @@ struct Solution {
   std::optional<nlohmann::json> server_response;
   std::optional<std::string> local_submission_error;
   bool network_candidate{false};
+  bool share_candidate{true};
+  bool personal_record{false};
   bool offline{false};
   std::filesystem::path result_file;
   std::filesystem::path share_audit_file;

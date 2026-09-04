@@ -35,6 +35,12 @@ ZoneStats empty_zone(const ZoneRange& range) {
   return zone;
 }
 
+std::string hex_u32(const std::uint32_t value) {
+  std::ostringstream output;
+  output << std::hex << std::setfill('0') << std::setw(8) << value;
+  return output.str();
+}
+
 }  // namespace
 
 bool GenesisValidation::passed() const noexcept {
@@ -158,14 +164,17 @@ std::vector<ZoneStats> scan_cpu(const bitcoin::Header& input,
   std::vector<ZoneStats> result;
   result.reserve(layout.size());
   auto header = input;
+  const auto network_target = bitcoin::target_from_nbits(hex_u32(decode_header(input).nbits));
   for (const auto& range : layout) {
     auto zone = empty_zone(range);
     for (std::uint64_t nonce64 = range.nonce_start; nonce64 <= range.nonce_end; ++nonce64) {
       const auto nonce = static_cast<std::uint32_t>(nonce64);
       bitcoin::set_nonce(header, nonce);
-      const auto value = pow_value(crypto::sha256d(header));
+      const auto digest = crypto::sha256d(header);
+      const auto value = pow_value(digest);
       const auto classified = classify_tail(value);
       for (std::size_t i = 0; i < zone.counts.size(); ++i) zone.counts[i] += classified[i];
+      if (bitcoin::hash_meets_target(digest, network_target)) ++zone.network_hits;
       if (minimum_precedes(value, nonce, zone.minimum_pow_value, zone.minimum_nonce)) {
         zone.minimum_pow_value = value;
         zone.minimum_nonce = nonce;
@@ -185,6 +194,7 @@ GlobalStats aggregate_zones(const std::vector<ZoneStats>& zones) {
   for (const auto& zone : zones) {
     result.total_nonce_count += zone.range.nonce_count;
     for (std::size_t i = 0; i < result.counts.size(); ++i) result.counts[i] += zone.counts[i];
+    result.network_hits += zone.network_hits;
     if (minimum_precedes(zone.minimum_pow_value, zone.minimum_nonce,
                          result.minimum_pow_value, result.minimum_nonce)) {
       result.minimum_pow_value = zone.minimum_pow_value;
@@ -206,7 +216,8 @@ bool same_statistics(const std::vector<ZoneStats>& left,
         a.range.nonce_end != b.range.nonce_end ||
         a.range.nonce_count != b.range.nonce_count ||
         a.minimum_pow_value != b.minimum_pow_value ||
-        a.minimum_nonce != b.minimum_nonce || a.counts != b.counts) {
+        a.minimum_nonce != b.minimum_nonce || a.counts != b.counts ||
+        a.network_hits != b.network_hits) {
       return false;
     }
   }

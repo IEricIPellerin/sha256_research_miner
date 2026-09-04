@@ -17,7 +17,9 @@ namespace srm::research::header_space {
 
 constexpr std::uint64_t kNonceSpaceSize = std::uint64_t{1} << 32U;
 constexpr std::uint64_t kDefaultZoneSize = std::uint64_t{1} << 20U;
-constexpr std::array<unsigned, 7> kThresholdBits{8, 12, 16, 20, 24, 28, 32};
+// Pre-registered tail regimes for one complete 2^32-nonce block: expected
+// counts 64, 16, 4, 1, 1/4, 1/16, and 1/64 respectively.
+constexpr std::array<unsigned, 7> kThresholdBits{26, 28, 30, 32, 34, 36, 38};
 
 // Big-endian 32-bit words of the integer used by Bitcoin's PoW comparison.
 // Its hexadecimal encoding is also the conventional displayed block hash.
@@ -46,6 +48,7 @@ struct ZoneStats {
   PowValue minimum_pow_value{};
   std::uint32_t minimum_nonce{0};
   TailCounts counts{};
+  std::uint64_t network_hits{0};
 };
 
 struct GlobalStats {
@@ -54,6 +57,7 @@ struct GlobalStats {
   std::uint32_t minimum_nonce{0};
   std::uint64_t minimum_zone{0};
   TailCounts counts{};
+  std::uint64_t network_hits{0};
 };
 
 struct GenesisValidation {

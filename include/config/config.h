@@ -32,12 +32,15 @@ struct ConsoleConfig {
   unsigned refresh_ms{1000};
   bool show_job_events{true};
   bool show_best_hash{true};
+  double high_difficulty_threshold{10000.0};
 };
 struct LoggingConfig {
   std::filesystem::path directory{"results"};
   bool save_session_log{true};
   bool save_block_candidates{true};
   bool save_share_audits{true};
+  unsigned share_audit_retention_hours{24};
+  double permanent_high_difficulty_threshold{10000.0};
 };
 struct HistoricalConfig {
   std::string header_hex;

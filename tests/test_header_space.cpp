@@ -44,17 +44,21 @@ TEST_CASE("Header-space leading-zero thresholds use the Bitcoin PoW integer") {
 
   hs::PowValue value{};
   value.fill(std::numeric_limits<std::uint32_t>::max());
-  value[0] = 0x000fffffU;
-  REQUIRE_EQ(hs::leading_zero_bits(value), 12U);
-  const auto counts12 = hs::classify_tail(value);
-  REQUIRE_EQ(counts12[0], 1U);
-  REQUIRE_EQ(counts12[1], 1U);
-  REQUIRE_EQ(counts12[2], 0U);
+  value[0] = 0x0000000fU;
+  REQUIRE_EQ(hs::leading_zero_bits(value), 28U);
+  const auto counts28 = hs::classify_tail(value);
+  REQUIRE_EQ(counts28[0], 1U);
+  REQUIRE_EQ(counts28[1], 1U);
+  REQUIRE_EQ(counts28[2], 0U);
 
   value[0] = 0U;
   REQUIRE_EQ(hs::leading_zero_bits(value), 32U);
   const auto counts32 = hs::classify_tail(value);
-  for (const auto count : counts32) REQUIRE_EQ(count, 1U);
+  REQUIRE_EQ(counts32[0], 1U);
+  REQUIRE_EQ(counts32[1], 1U);
+  REQUIRE_EQ(counts32[2], 1U);
+  REQUIRE_EQ(counts32[3], 1U);
+  REQUIRE_EQ(counts32[4], 0U);
 }
 
 TEST_CASE("Header-space zone layout is absolute, contiguous, and includes uint32 max") {
@@ -91,6 +95,7 @@ TEST_CASE("Header-space CPU reference covers nonce zero, one, Genesis, and uint3
   REQUIRE_EQ(genesis[0].minimum_nonce, 2083236893U);
   REQUIRE_EQ(hs::pow_value_hex(genesis[0].minimum_pow_value),
              "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+  REQUIRE_EQ(genesis[0].network_hits, 1U);
 
   const auto high = hs::scan_cpu(header, 0xfffffffeULL, 2U, 1U);
   REQUIRE_EQ(high.size(), 2U);
@@ -105,17 +110,20 @@ TEST_CASE("Header-space aggregation sums exact counts and applies deterministic 
   first.minimum_pow_value.fill(0U);
   first.minimum_nonce = 7U;
   first.counts = {5U, 4U, 3U, 2U, 1U, 1U, 0U};
+  first.network_hits = 1U;
   hs::ZoneStats second;
   second.range = {1U, 10U, 19U, 10U};
   second.minimum_pow_value = first.minimum_pow_value;
   second.minimum_nonce = 3U;
   second.counts = {6U, 5U, 4U, 3U, 2U, 1U, 1U};
+  second.network_hits = 2U;
   const auto global = hs::aggregate_zones({first, second});
   REQUIRE_EQ(global.total_nonce_count, 20U);
   REQUIRE_EQ(global.minimum_nonce, 3U);
   REQUIRE_EQ(global.minimum_zone, 1U);
   REQUIRE_EQ(global.counts[0], 11U);
   REQUIRE_EQ(global.counts[6], 1U);
+  REQUIRE_EQ(global.network_hits, 3U);
 }
 
 TEST_CASE("Header-space OpenCL zone statistics equal CPU including upper nonce edge") {

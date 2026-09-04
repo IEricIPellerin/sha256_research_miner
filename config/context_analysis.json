@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "archive": "results/stratum_jobs.jsonl",
+  "output_root": "results/context_analysis",
+  "gpu": {
+    "device": "auto",
+    "local_size": 64,
+    "zone_size": 1048576,
+    "batch_zones": 256
+  },
+  "benchmark": {
+    "nonce_count": 268435456,
+    "zone_size": 1048576,
+    "batch_zones": 256
+  },
+  "profiles": {
+    "QUICK": {
+      "description": "Exemple technique court; tous les paramètres sont modifiables.",
+      "sizing": "total_blocks",
+      "total_blocks": 4,
+      "prevhash_count": 3,
+      "context_count": 3
+    },
+    "PILOT": {
+      "description": "Exemple pilote; la taille n'est jamais une limite imposée.",
+      "sizing": "total_blocks",
+      "total_blocks": 500,
+      "prevhash_count": 12,
+      "context_count": 24
+    },
+    "FULL": {
+      "description": "Exemple basé sur un budget de temps; aucun nombre fixe de blocs.",
+      "sizing": "time_budget_minutes",
+      "time_budget_minutes": 600,
+      "prevhash_count": 32,
+      "context_count": 64
+    }
+  },
+  "scientific": {
+    "partition_unit": "prevhash",
+    "discovery_fraction": 0.60,
+    "validation_fraction": 0.20,
+    "holdout_fraction": 0.20,
+    "weak_sample_warning_below_blocks": 100,
+    "probe_enabled": false
+  }
+}

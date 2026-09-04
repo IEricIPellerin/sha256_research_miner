@@ -19,5 +19,7 @@ Target256 target_from_hex(std::string_view target_hex);
 Target256 share_target_from_difficulty(double difficulty);
 std::string target_hex(const Target256& target);
 bool hash_meets_target(const crypto::Digest& digest, const Target256& target);
+double difficulty_from_hash(const crypto::Digest& digest);
+double difficulty_from_target(const Target256& target);
 
 }  // namespace srm::bitcoin

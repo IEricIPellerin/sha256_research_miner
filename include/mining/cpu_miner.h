@@ -33,7 +33,9 @@ struct Candidate {
   crypto::Digest merkle_root;
   crypto::Digest digest;
   std::uint32_t nonce{0};
+  bool share_candidate{true};
   bool network_candidate{false};
+  std::string worker{"CPU"};
 };
 
 class CpuMiner {

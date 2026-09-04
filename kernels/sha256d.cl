@@ -64,6 +64,20 @@ int meets_target(__private uint hash[8], __global const uchar* target) {
   return 1;
 }
 
+uint pow_bswap(uint x) {
+  return ((x&0x000000ffU)<<24)|((x&0x0000ff00U)<<8)|
+         ((x&0x00ff0000U)>>8)|((x&0xff000000U)>>24);
+}
+
+int pow_precedes(__private const uint left[8], uint left_nonce,
+                 __private const uint right[8], uint right_nonce) {
+  for(uint i=0;i<8U;++i) {
+    if(left[i]<right[i]) return 1;
+    if(left[i]>right[i]) return 0;
+  }
+  return left_nonce<right_nonce;
+}
+
 __kernel void sha256d_scan(__global const uchar* prefix, uint nonce_start, uint nonce_count,
                            __global const uchar* target, volatile __global uint* candidate_count,
                            __global uint* candidate_nonces) {
@@ -75,6 +89,55 @@ __kernel void sha256d_scan(__global const uchar* prefix, uint nonce_start, uint 
   header[76]=(uchar)nonce;header[77]=(uchar)(nonce>>8);header[78]=(uchar)(nonce>>16);header[79]=(uchar)(nonce>>24);
   uint hash[8];sha256d80(header,hash,64);
   if(meets_target(hash,target)) { uint slot=atomic_inc(candidate_count); if(slot<64)candidate_nonces[slot]=nonce; }
+}
+
+// Live scanner variant. Besides ordinary share candidates, it returns one
+// exact 256-bit minimum per workgroup. This makes personal-record tracking
+// independent of the CKPool share target without transferring every hash.
+__kernel void sha256d_scan_observed(__global const uchar* prefix, uint nonce_start, uint nonce_count,
+                                    __global const uchar* target, volatile __global uint* candidate_count,
+                                    __global uint* candidate_nonces, __global uint* group_minima,
+                                    __local uint* local_minima) {
+  uint gid=(uint)get_global_id(0);
+  uint lid=(uint)get_local_id(0);
+  uint nonce=nonce_start+gid;
+  uint value[8];
+  uint hash[8];
+  if(gid<nonce_count) {
+    uchar header[80];
+    for(uint i=0;i<76;i++)header[i]=prefix[i];
+    header[76]=(uchar)nonce;header[77]=(uchar)(nonce>>8);header[78]=(uchar)(nonce>>16);header[79]=(uchar)(nonce>>24);
+    sha256d80(header,hash,64);
+    if(meets_target(hash,target)) { uint slot=atomic_inc(candidate_count); if(slot<64)candidate_nonces[slot]=nonce; }
+    for(uint i=0;i<8U;++i)value[i]=pow_bswap(hash[7U-i]);
+  } else {
+    for(uint i=0;i<8U;++i)value[i]=0xffffffffU;
+    nonce=0xffffffffU;
+  }
+
+  uint base=lid*9U;
+  for(uint i=0;i<8U;++i)local_minima[base+i]=value[i];
+  local_minima[base+8U]=nonce;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for(uint stride=(uint)get_local_size(0)>>1U;stride>0U;stride>>=1U) {
+    if(lid<stride) {
+      uint right_base=(lid+stride)*9U;
+      uint right[8];
+      uint left[8];
+      for(uint i=0;i<8U;++i) { right[i]=local_minima[right_base+i]; left[i]=local_minima[base+i]; }
+      uint right_nonce=local_minima[right_base+8U];
+      uint left_nonce=local_minima[base+8U];
+      if(pow_precedes(right,right_nonce,left,left_nonce)) {
+        for(uint i=0;i<8U;++i)local_minima[base+i]=right[i];
+        local_minima[base+8U]=right_nonce;
+      }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  if(lid==0U) {
+    uint output=(uint)get_group_id(0)*9U;
+    for(uint i=0;i<9U;++i)group_minima[output+i]=local_minima[i];
+  }
 }
 
 // Deterministic validation path: returns all eight digest words for each

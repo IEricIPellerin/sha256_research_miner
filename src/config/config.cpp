@@ -2,6 +2,7 @@
 #include "config/config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -64,6 +65,7 @@ AppConfig load(const std::filesystem::path& path) {
     assign_if(item, "refresh_ms", config.console.refresh_ms);
     assign_if(item, "show_job_events", config.console.show_job_events);
     assign_if(item, "show_best_hash", config.console.show_best_hash);
+    assign_if(item, "high_difficulty_threshold", config.console.high_difficulty_threshold);
   }
   if (json.contains("logging")) {
     const auto& item = json.at("logging");
@@ -73,6 +75,8 @@ AppConfig load(const std::filesystem::path& path) {
     assign_if(item, "save_session_log", config.logging.save_session_log);
     assign_if(item, "save_block_candidates", config.logging.save_block_candidates);
     assign_if(item, "save_share_audits", config.logging.save_share_audits);
+    assign_if(item, "share_audit_retention_hours", config.logging.share_audit_retention_hours);
+    assign_if(item, "permanent_high_difficulty_threshold", config.logging.permanent_high_difficulty_threshold);
   } else {
     config.logging.directory = config.project_root / config.logging.directory;
   }
@@ -121,6 +125,14 @@ AppConfig load(const std::filesystem::path& path) {
 
   if (config.cpu.enabled && config.cpu.threads == 0) throw std::invalid_argument("cpu.threads must be positive");
   if (config.checkpoint_interval_ms < 250) throw std::invalid_argument("checkpoint.interval_ms must be at least 250");
+  if (!std::isfinite(config.console.high_difficulty_threshold) ||
+      config.console.high_difficulty_threshold < 0.0) {
+    throw std::invalid_argument("console.high_difficulty_threshold must be finite and non-negative");
+  }
+  if (!std::isfinite(config.logging.permanent_high_difficulty_threshold) ||
+      config.logging.permanent_high_difficulty_threshold < 0.0) {
+    throw std::invalid_argument("logging.permanent_high_difficulty_threshold must be finite and non-negative");
+  }
   if (config.mode == Mode::Live && config.ckpool.username == "CHANGE_ME") {
     throw std::invalid_argument("live mode is locked: replace ckpool.username with your Bitcoin address[.worker]");
   }

@@ -33,9 +33,13 @@ std::string file_timestamp() {
 ResultLogger::ResultLogger(std::filesystem::path directory,
                            const bool session_log,
                            const bool block_candidates,
-                           const bool share_audits)
+                           const bool share_audits,
+                           const unsigned share_audit_retention_hours,
+                           const double permanent_high_difficulty_threshold)
     : directory_(std::move(directory)), session_log_(session_log),
-      block_candidates_(block_candidates), share_audits_(share_audits) {
+      block_candidates_(block_candidates), share_audits_(share_audits),
+      share_audit_retention_hours_(share_audit_retention_hours),
+      permanent_high_difficulty_threshold_(permanent_high_difficulty_threshold) {
   std::error_code error;
   std::filesystem::create_directories(directory_, error);
   if (error) {
@@ -44,6 +48,7 @@ ResultLogger::ResultLogger(std::filesystem::path directory,
         platform::error_message_utf8(error));
   }
   session_path_ = directory_ / ("session_" + file_timestamp() + ".log");
+  purge_expired_share_audits();
 }
 
 void ResultLogger::event(const std::string& text) {
@@ -87,15 +92,67 @@ void ResultLogger::update_candidate(const mining::Solution& solution) {
 std::filesystem::path ResultLogger::save_share_audit(mining::Solution& solution) {
   if (!share_audits_) return {};
   std::scoped_lock lock(mutex_);
-  solution.share_audit_file = unique_result_path("share_audit_");
-  checkpoint::StateStore(solution.share_audit_file).save(share_audit_json(solution));
+  const auto timestamp = file_timestamp();
+  const auto segment = timestamp.substr(0, 11) + "00";
+  solution.share_audit_file = directory_ / "share_audit_recent" / ("shares_" + segment + ".jsonl");
+  std::error_code error;
+  std::filesystem::create_directories(solution.share_audit_file.parent_path(), error);
+  if (error) throw checkpoint::PersistenceError("cannot create recent share audit directory");
+  std::ofstream output(solution.share_audit_file, std::ios::binary | std::ios::app);
+  if (!output) throw checkpoint::PersistenceError("cannot append recent share audit segment");
+  auto value = share_audit_json(solution);
+  value["lifecycle_event"] = "detected";
+  output << value.dump() << '\n';
+  output.flush();
+  if (!output) throw checkpoint::PersistenceError("cannot flush recent share audit segment");
   return solution.share_audit_file;
 }
 
 void ResultLogger::update_share_audit(const mining::Solution& solution) {
   if (solution.share_audit_file.empty()) return;
   std::scoped_lock lock(mutex_);
-  checkpoint::StateStore(solution.share_audit_file).save(share_audit_json(solution));
+  std::ofstream output(solution.share_audit_file, std::ios::binary | std::ios::app);
+  if (!output) throw checkpoint::PersistenceError("cannot update recent share audit segment");
+  auto value = share_audit_json(solution);
+  value["lifecycle_event"] = "submission_update";
+  output << value.dump() << '\n';
+  output.flush();
+  if (!output) throw checkpoint::PersistenceError("cannot flush recent share audit update");
+}
+
+void ResultLogger::save_permanent_event(const mining::Solution& solution, const std::string& reason) {
+  if (!solution.network_candidate && !solution.personal_record &&
+      solution.hash_difficulty < permanent_high_difficulty_threshold_) return;
+  auto value = share_audit_json(solution);
+  value["schema_version"] = 1;
+  value["permanent_reason"] = reason;
+  append_jsonl(std::filesystem::path("statistics") / "high_difficulty_shares.jsonl", value);
+}
+
+std::size_t ResultLogger::purge_expired_share_audits() {
+  if (share_audit_retention_hours_ == 0) return 0;
+  std::scoped_lock lock(mutex_);
+  const auto cutoff = std::filesystem::file_time_type::clock::now() -
+      std::chrono::hours(share_audit_retention_hours_);
+  std::size_t removed = 0;
+  const auto purge_directory = [&](const std::filesystem::path& root, const bool legacy_only) {
+    std::error_code iterator_error;
+    if (!std::filesystem::exists(root, iterator_error) || iterator_error) return;
+    for (std::filesystem::directory_iterator it(root, iterator_error), end;
+         !iterator_error && it != end; it.increment(iterator_error)) {
+      if (!it->is_regular_file()) continue;
+      const auto name = it->path().filename().string();
+      if (legacy_only && !name.starts_with("share_audit_")) continue;
+      std::error_code time_error;
+      const auto modified = it->last_write_time(time_error);
+      if (time_error || modified >= cutoff) continue;
+      std::error_code remove_error;
+      if (std::filesystem::remove(it->path(), remove_error) && !remove_error) ++removed;
+    }
+  };
+  purge_directory(directory_ / "share_audit_recent", false);
+  purge_directory(directory_, true);
+  return removed;
 }
 
 void ResultLogger::save_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) const {
@@ -109,6 +166,13 @@ void ResultLogger::append_jsonl(
   std::scoped_lock lock(mutex_);
 
   const auto path = directory_ / filename;
+
+  std::error_code directory_error;
+  std::filesystem::create_directories(path.parent_path(), directory_error);
+  if (directory_error) {
+    throw checkpoint::PersistenceError(
+        "cannot create JSONL archive directory " + platform::path_utf8(path.parent_path()));
+  }
 
   std::ofstream output(
       path,
@@ -153,6 +217,10 @@ nlohmann::json ResultLogger::candidate_json(const mining::Solution& value) {
       {"nonce", value.nonce}, {"nonce_uint32", value.nonce_value},
       {"nonce_header_le", value.nonce_header_le}, {"header_hex", value.header_hex}, {"hash", value.hash},
       {"network_target", value.network_target}, {"share_target", value.share_target},
+      {"hash_difficulty", value.hash_difficulty},
+      {"network_difficulty", value.network_difficulty},
+      {"best_to_network_ratio", value.network_difficulty_ratio},
+      {"worker", value.worker},
       {"detected_timestamp_utc", value.detected_timestamp_utc},
       {"submitted_timestamp_utc", value.submitted_timestamp_utc.empty()
           ? nlohmann::json(nullptr) : nlohmann::json(value.submitted_timestamp_utc)},
@@ -160,7 +228,8 @@ nlohmann::json ResultLogger::candidate_json(const mining::Solution& value) {
           ? nlohmann::json(nullptr) : nlohmann::json(value.response_timestamp_utc)},
       {"submission_status", value.submission_status},
       {"submission_latency_us", value.submission_latency_us},
-      {"network_candidate", value.network_candidate}, {"offline", value.offline}};
+      {"network_candidate", value.network_candidate}, {"share_candidate", value.share_candidate},
+      {"personal_record", value.personal_record}, {"offline", value.offline}};
   result["submission_id"] = value.submission_id ? nlohmann::json(*value.submission_id) : nlohmann::json(nullptr);
   result["accepted"] = value.accepted ? nlohmann::json(*value.accepted) : nlohmann::json(nullptr);
   result["server_response"] = value.server_response ? *value.server_response : nlohmann::json(nullptr);
@@ -189,10 +258,13 @@ nlohmann::json ResultLogger::share_audit_json(const mining::Solution& value) {
           {"work_fingerprint", value.work_fingerprint}}},
       {"targets", {
           {"share_difficulty", value.share_difficulty}, {"share_target", value.share_target},
-          {"network_target", value.network_target}}},
+          {"network_target", value.network_target}, {"hash_difficulty", value.hash_difficulty},
+          {"network_difficulty", value.network_difficulty}}},
       {"work", {
           {"merkle_root", value.merkle_root}, {"header_hex", value.header_hex},
-          {"hash_bitcoin_display", value.hash}, {"network_candidate", value.network_candidate}}},
+          {"hash_bitcoin_display", value.hash}, {"network_candidate", value.network_candidate},
+          {"share_candidate", value.share_candidate}, {"personal_record", value.personal_record},
+          {"worker", value.worker}}},
       {"nonce", {
           {"uint32", value.nonce_value}, {"stratum_hex", value.nonce},
           {"header_little_endian_hex", value.nonce_header_le}}},

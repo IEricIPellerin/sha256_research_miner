@@ -14,6 +14,19 @@
 
 namespace {
 
+nlohmann::json jsonl_submission_record(const std::filesystem::path& path, const std::int64_t id) {
+  std::ifstream input(path, std::ios::binary);
+  std::string line;
+  nlohmann::json result;
+  while (std::getline(input, line)) if (!line.empty()) {
+    auto value = nlohmann::json::parse(line);
+    const auto& submission = value.at("submission");
+    if (!submission.at("submission_id").is_null() &&
+        submission.at("submission_id").get<std::int64_t>() == id) result = std::move(value);
+  }
+  return result;
+}
+
 srm::mining::Solution make_solution(
     const srm::stratum::StratumJob& job,
     const std::string& extranonce1,
@@ -91,7 +104,7 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
 
   auto accepted = make_solution(job, "01020304", "05060709", 0x5a5d5d8fU, false);
   const auto accepted_path = logger.save_share_audit(accepted);
-  REQUIRE(rejected_path != accepted_path);
+  REQUIRE_EQ(rejected_path, accepted_path);
   accepted.submission_id = 101;
   accepted.accepted = true;
   accepted.response_timestamp_utc = "2026-09-02T07:08:59.248Z";
@@ -100,7 +113,7 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
   accepted.server_response = nlohmann::json{{"id", 101}, {"error", nullptr}, {"result", true}};
   logger.update_share_audit(accepted);
 
-  const auto audit = srm::checkpoint::StateStore(rejected_path).load_or({});
+  const auto audit = jsonl_submission_record(rejected_path, 100);
   REQUIRE_EQ(audit.at("schema_version").get<unsigned>(), 1U);
   REQUIRE_EQ(audit.at("stratum_job").at("coinbase1").get<std::string>(), job.coinbase1);
   REQUIRE_EQ(audit.at("stratum_job").at("coinbase2").get<std::string>(), job.coinbase2);
@@ -142,7 +155,7 @@ TEST_CASE("share audit alone reconstructs header submit nonce and exact server r
       srm::crypto::bitcoin_hash_hex(srm::crypto::sha256d(rebuilt.header)),
       audit.at("work").at("hash_bitcoin_display").get<std::string>());
 
-  const auto accepted_audit = srm::checkpoint::StateStore(accepted_path).load_or({});
+  const auto accepted_audit = jsonl_submission_record(accepted_path, 101);
   REQUIRE_EQ(accepted_audit.at("submission").at("submission_id").get<std::int64_t>(), 101);
   REQUIRE(accepted_audit.at("submission").at("accepted").get<bool>());
   REQUIRE_EQ(accepted_audit.at("nonce").at("stratum_hex").get<std::string>(), "5a5d5d8f");

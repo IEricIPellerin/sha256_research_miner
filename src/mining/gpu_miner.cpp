@@ -331,15 +331,22 @@ struct GpuMiner::Impl {
     cl_command_queue queue{};
     cl_program program{};
     cl_kernel kernel{};
+    cl_kernel observed_kernel{};
     cl_mem header_buffer{};
     cl_mem target_buffer{};
     cl_mem count_buffer{};
     cl_mem candidates_buffer{};
+    cl_mem minima_buffer{};
 
     std::string current_unit_id = unit->id;
 
     const auto release_all = [&]
     {
+      if (minima_buffer)
+      {
+        clReleaseMemObject(minima_buffer);
+      }
+
       if (candidates_buffer)
       {
         clReleaseMemObject(candidates_buffer);
@@ -363,6 +370,11 @@ struct GpuMiner::Impl {
       if (kernel)
       {
         clReleaseKernel(kernel);
+      }
+
+      if (observed_kernel)
+      {
+        clReleaseKernel(observed_kernel);
       }
 
       if (program)
@@ -765,6 +777,31 @@ struct GpuMiner::Impl {
             std::to_string(global_size));
       }
 
+      // One observed bootstrap launch establishes an exact personal threshold.
+      // Subsequent launches keep the lean kernel and use the union of the share
+      // target and that threshold, so record tracking has negligible steady cost.
+      observed_kernel = clCreateKernel(program, "sha256d_scan_observed", &error);
+      check(error, "clCreateKernel sha256d_scan_observed");
+
+      const auto maximum_groups = (global_size + local_size - 1U) / local_size;
+      std::vector<std::uint32_t> group_minima(maximum_groups * 9U);
+      minima_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
+                                     group_minima.size() * sizeof(std::uint32_t),
+                                     nullptr, &error);
+      check(error, "personal minimum buffer");
+      check(clSetKernelArg(observed_kernel, 0, sizeof(header_buffer), &header_buffer), "observed header arg");
+      check(clSetKernelArg(observed_kernel, 3, sizeof(target_buffer), &target_buffer), "observed target arg");
+      check(clSetKernelArg(observed_kernel, 4, sizeof(count_buffer), &count_buffer), "observed count arg");
+      check(clSetKernelArg(observed_kernel, 5, sizeof(candidates_buffer), &candidates_buffer), "observed candidates arg");
+      check(clSetKernelArg(observed_kernel, 6, sizeof(minima_buffer), &minima_buffer), "observed minima arg");
+      const auto local_minima_bytes = local_size * 9U * sizeof(std::uint32_t);
+      check(clSetKernelArg(observed_kernel, 7, local_minima_bytes, nullptr), "observed local minima arg");
+
+      std::string unit_best_hash;
+      std::optional<std::uint32_t> unit_best_nonce;
+      std::optional<bitcoin::Target256> personal_target;
+      bool bootstrap_complete = false;
+
       while (!token.stop_requested() &&
              active_generation.load(
                  std::memory_order_acquire) ==
@@ -849,9 +886,11 @@ struct GpuMiner::Impl {
                     nullptr),
                 "candidate reset");
 
+            auto active_kernel = bootstrap_complete ? kernel : observed_kernel;
+
             check(
                 clSetKernelArg(
-                    kernel,
+                    active_kernel,
                     1,
                     sizeof(start),
                     &start),
@@ -859,7 +898,7 @@ struct GpuMiner::Impl {
 
             check(
                 clSetKernelArg(
-                    kernel,
+                    active_kernel,
                     2,
                     sizeof(count),
                     &count),
@@ -868,7 +907,7 @@ struct GpuMiner::Impl {
             check(
                 clEnqueueNDRangeKernel(
                     queue,
-                    kernel,
+                    active_kernel,
                     1,
                     nullptr,
                     &launch_global,
@@ -881,6 +920,43 @@ struct GpuMiner::Impl {
             check(
                 clFinish(queue),
                 "kernel finish");
+
+            bool target_changed = false;
+            if (!bootstrap_complete) {
+              const auto group_count = launch_global / local_size;
+              check(clEnqueueReadBuffer(queue, minima_buffer, CL_TRUE, 0,
+                                        group_count * 9U * sizeof(std::uint32_t),
+                                        group_minima.data(), 0, nullptr, nullptr),
+                    "personal minima read");
+              std::size_t best_group = 0;
+              for (std::size_t group = 1; group < group_count; ++group) {
+                const auto left = group * 9U;
+                const auto right = best_group * 9U;
+                bool precedes = false;
+                bool differs = false;
+                for (std::size_t word = 0; word < 8U; ++word) {
+                  if (group_minima[left + word] == group_minima[right + word]) continue;
+                  precedes = group_minima[left + word] < group_minima[right + word];
+                  differs = true;
+                  break;
+                }
+                if (!differs) precedes = group_minima[left + 8U] < group_minima[right + 8U];
+                if (precedes) best_group = group;
+              }
+              const auto observed_nonce = group_minima[best_group * 9U + 8U];
+              auto observed_header = built.header;
+              bitcoin::set_nonce(observed_header, observed_nonce);
+              const auto observed_digest = crypto::sha256d(observed_header);
+              const auto observed_hash = crypto::bitcoin_hash_hex(observed_digest);
+              personal_target = bitcoin::target_from_hex(observed_hash);
+              unit_best_hash = observed_hash;
+              unit_best_nonce = observed_nonce;
+              handler(Candidate{job, unit->extranonce2, observed_header, built.merkle_root,
+                                observed_digest, observed_nonce, false,
+                                bitcoin::hash_meets_target(observed_digest, job.network_target), "GPU"});
+              bootstrap_complete = true;
+              target_changed = true;
+            }
 
             std::uint32_t candidate_count = 0;
 
@@ -931,11 +1007,15 @@ struct GpuMiner::Impl {
                 const auto digest =
                     crypto::sha256d(header);
 
-                if (!bitcoin::hash_meets_target(
-                        digest,
-                        job.share_target))
-                {
-                  continue;
+                const auto share_candidate = bitcoin::hash_meets_target(digest, job.share_target);
+                const auto candidate_hash = crypto::bitcoin_hash_hex(digest);
+                if (!personal_target || candidate_hash < bitcoin::target_hex(*personal_target)) {
+                  personal_target = bitcoin::target_from_hex(candidate_hash);
+                  target_changed = true;
+                  if (unit_best_hash.empty() || candidate_hash < unit_best_hash) {
+                    unit_best_hash = candidate_hash;
+                    unit_best_nonce = candidate_nonces[i];
+                  }
                 }
 
                 handler(
@@ -946,10 +1026,21 @@ struct GpuMiner::Impl {
                         built.merkle_root,
                         digest,
                         candidate_nonces[i],
+                        share_candidate,
                         bitcoin::hash_meets_target(
                             digest,
-                            job.network_target)});
+                            job.network_target),
+                        "GPU"});
               }
+            }
+
+            if (target_changed && personal_target) {
+              auto union_target = job.share_target;
+              if (union_target.big_endian < personal_target->big_endian) union_target = *personal_target;
+              check(clEnqueueWriteBuffer(queue, target_buffer, CL_TRUE, 0,
+                                         union_target.big_endian.size(), union_target.big_endian.data(),
+                                         0, nullptr, nullptr),
+                    "personal/share union target update");
             }
 
             processed += count64;
@@ -960,7 +1051,9 @@ struct GpuMiner::Impl {
           allocator.update_progress(
               unit->id,
               next,
-              processed);
+              processed,
+              unit_best_hash,
+              unit_best_nonce);
 
           telemetry.set_gpu_progress(
               unit->nonce_start,
@@ -1014,6 +1107,8 @@ struct GpuMiner::Impl {
 
           break;
         }
+        unit_best_hash.clear();
+        unit_best_nonce.reset();
       }
 
       release_all();

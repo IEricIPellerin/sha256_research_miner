@@ -54,8 +54,19 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
     crypto::Digest best{};
     best.fill(0xff);
     std::uint32_t best_nonce = static_cast<std::uint32_t>(unit->nonce_next);
+    std::string reported_best;
     std::uint64_t pending = 0;
     auto nonce = unit->nonce_next;
+
+    const auto report_personal_best = [&] {
+      const auto best_text = crypto::bitcoin_hash_hex(best);
+      if (best_text == reported_best) return;
+      auto header = built.header;
+      bitcoin::set_nonce(header, best_nonce);
+      handler_(Candidate{job, unit->extranonce2, header, built.merkle_root, best, best_nonce,
+                         false, bitcoin::hash_meets_target(best, job.network_target), "CPU"});
+      reported_best = best_text;
+    };
 
     for (; nonce < unit->nonce_end; ++nonce) {
       if ((pending & 4095U) == 0 && (token.stop_requested() || active_generation_.load(std::memory_order_relaxed) != job.generation)) break;
@@ -68,7 +79,7 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
       const bool network = bitcoin::hash_meets_target(digest, job.network_target);
       if ((share || network) && active_generation_.load(std::memory_order_relaxed) == job.generation) {
         handler_(Candidate{job, unit->extranonce2, built.header, built.merkle_root, digest,
-                           static_cast<std::uint32_t>(nonce), network});
+                           static_cast<std::uint32_t>(nonce), true, network, "CPU"});
       }
 
       if (pending >= checkpoint_batch) {
@@ -76,6 +87,7 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
         allocator_.update_progress(unit->id, nonce + 1, pending, best_text, best_nonce);
         telemetry_.cpu_hashes.fetch_add(pending, std::memory_order_relaxed);
         telemetry_.observe_best(best_text);
+        report_personal_best();
         pending = 0;
       }
     }
@@ -85,6 +97,7 @@ void CpuMiner::worker(const std::stop_token token, LiveMiningJob job) {
       allocator_.update_progress(unit->id, nonce, pending, best_text, best_nonce);
       telemetry_.cpu_hashes.fetch_add(pending, std::memory_order_relaxed);
       telemetry_.observe_best(best_text);
+      report_personal_best();
     }
     if (nonce >= unit->nonce_end) {
       allocator_.complete(unit->id);

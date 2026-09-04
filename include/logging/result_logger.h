@@ -15,13 +15,17 @@ class ResultLogger {
   ResultLogger(std::filesystem::path directory,
                bool session_log,
                bool block_candidates,
-               bool share_audits = true);
+               bool share_audits = true,
+               unsigned share_audit_retention_hours = 24,
+               double permanent_high_difficulty_threshold = 10000.0);
 
   void event(const std::string& text);
   std::filesystem::path save_candidate(mining::Solution& solution);
   void update_candidate(const mining::Solution& solution);
   std::filesystem::path save_share_audit(mining::Solution& solution);
   void update_share_audit(const mining::Solution& solution);
+  void save_permanent_event(const mining::Solution& solution, const std::string& reason);
+  std::size_t purge_expired_share_audits();
   void save_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) const;
   void append_jsonl(const std::filesystem::path& filename,
                     const nlohmann::json& value) const;
@@ -38,6 +42,8 @@ class ResultLogger {
   bool session_log_;
   bool block_candidates_;
   bool share_audits_;
+  unsigned share_audit_retention_hours_;
+  double permanent_high_difficulty_threshold_;
   mutable std::mutex mutex_;
 };
 

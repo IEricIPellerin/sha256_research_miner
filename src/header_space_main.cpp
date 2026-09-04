@@ -203,13 +203,14 @@ nlohmann::json theoretical_json(const std::uint64_t nonce_count, const hs::TailC
 std::string zones_csv(const std::string& space_id, const std::vector<hs::ZoneStats>& zones) {
   std::ostringstream output;
   output << "space_id,zone_index,nonce_start,nonce_end,nonce_count,minimum_pow_value,"
-            "minimum_hash_display,minimum_nonce,T8,T12,T16,T20,T24,T28,T32\n";
+            "minimum_hash_display,minimum_nonce,T26,T28,T30,T32,T34,T36,T38,network_hits\n";
   for (const auto& zone : zones) {
     const auto minimum = hs::pow_value_hex(zone.minimum_pow_value);
     output << space_id << ',' << zone.range.zone_index << ',' << zone.range.nonce_start << ','
            << zone.range.nonce_end << ',' << zone.range.nonce_count << ",0x" << minimum << ','
            << minimum << ',' << zone.minimum_nonce;
     for (const auto count : zone.counts) output << ',' << count;
+    output << ',' << zone.network_hits;
     output << '\n';
   }
   return output.str();
@@ -219,11 +220,13 @@ struct Integrity {
   bool layout_exact{false};
   bool nonce_count_sum{false};
   bool threshold_sums{false};
+  bool network_hit_sum{false};
   bool minimum_merge{false};
   bool records_valid{false};
 
   [[nodiscard]] bool passed() const noexcept {
-    return layout_exact && nonce_count_sum && threshold_sums && minimum_merge && records_valid;
+    return layout_exact && nonce_count_sum && threshold_sums && network_hit_sum &&
+        minimum_merge && records_valid;
   }
 };
 
@@ -237,6 +240,7 @@ Integrity validate_integrity(const std::vector<hs::ZoneStats>& zones,
   integrity.layout_exact = zones.size() == expected.size();
   std::uint64_t summed_nonces = 0;
   hs::TailCounts summed_counts{};
+  std::uint64_t summed_network_hits = 0;
   integrity.records_valid = true;
   for (std::size_t i = 0; i < zones.size(); ++i) {
     const auto& zone = zones[i];
@@ -247,6 +251,7 @@ Integrity validate_integrity(const std::vector<hs::ZoneStats>& zones,
       integrity.layout_exact = false;
     }
     summed_nonces += zone.range.nonce_count;
+    summed_network_hits += zone.network_hits;
     if (zone.minimum_nonce < zone.range.nonce_start || zone.minimum_nonce > zone.range.nonce_end) {
       integrity.records_valid = false;
     }
@@ -259,6 +264,7 @@ Integrity validate_integrity(const std::vector<hs::ZoneStats>& zones,
   }
   integrity.nonce_count_sum = summed_nonces == nonce_count && global.total_nonce_count == nonce_count;
   integrity.threshold_sums = summed_counts == global.counts;
+  integrity.network_hit_sum = summed_network_hits == global.network_hits;
   const auto merged = hs::aggregate_zones(zones);
   integrity.minimum_merge = merged.minimum_pow_value == global.minimum_pow_value &&
       merged.minimum_nonce == global.minimum_nonce && merged.minimum_zone == global.minimum_zone;
@@ -458,6 +464,7 @@ int run(const int argc, char** argv) {
           {"global_minimum_nonce", global.minimum_nonce},
           {"global_minimum_zone", global.minimum_zone},
           {"tail_counts", counts_json(global.counts)},
+          {"network_target_hits", global.network_hits},
       }},
       {"theoretical_tail_expectations", theoretical_json(nonce_count, global.counts)},
       {"validations", {
@@ -489,6 +496,7 @@ int run(const int argc, char** argv) {
           {"zone_to_global", {
               {"nonce_count_sum", integrity.nonce_count_sum},
               {"threshold_sums", integrity.threshold_sums},
+              {"network_target_hit_sum", integrity.network_hit_sum},
               {"minimum_merge", integrity.minimum_merge},
               {"records_valid", integrity.records_valid},
           }},
@@ -524,6 +532,7 @@ int run(const int argc, char** argv) {
   for (std::size_t i = 0; i < hs::kThresholdBits.size(); ++i) {
     std::cout << "[HEADER-SPACE] T" << hs::kThresholdBits[i] << '=' << global.counts[i] << '\n';
   }
+  std::cout << "[HEADER-SPACE] network_hits=" << global.network_hits << '\n';
   std::cout << "[HEADER-SPACE] validation=" << (validation_passed ? "PASS" : "FAIL") << '\n';
   std::cout << "[HEADER-SPACE] summary=" << summary_path.string() << '\n';
   std::cout << "[HEADER-SPACE] zones=" << zones_path.string() << '\n';

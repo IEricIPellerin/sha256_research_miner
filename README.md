@@ -17,7 +17,9 @@ Mineur et laboratoire SHA-256d C++20 pour Windows 11, VS Code, Solo CKPool et GP
 - Extranonce2 distincts CPU/GPU quand la taille annoncée le permet; sinon plages de nonce disjointes.
 - Checkpoints atomiques sérialisés, reprise du `nonce_next` durable et états `PENDING`, `IN_PROGRESS`, `COMPLETE`, `STALE`.
 - Sauvegarde prioritaire d'un candidat réseau avant sa soumission, puis mise à jour atomique avec la réponse CKPool.
-- Audit durable `share_audit_*.json` de chaque share, avec le job complet, le header reconstructible, le nonce numérique/Stratum/header et la réponse exacte.
+- Record PoW personnel indépendant de la target de share, comparé exactement sur 256 bits et conservé atomiquement sous `results/statistics/`.
+- Audits récents de shares en segments JSONL avec rétention configurable (24 h par défaut), plus historique permanent compact des records, fortes difficultés et candidats réseau.
+- Analyseur offline de contextes Stratum: campagnes `B(J,e)` complètes, dimensionnement libre, benchmark préalable, aperçu/confirmation, manifeste, partitions par prevhash et reprise par bloc.
 - Modes `benchmark`, `historical_test`, `research` et `mock_stratum`, sans connexion ni soumission CKPool dans les modes hors ligne.
 - Télémétrie agrégée une fois par seconde et événements critiques immédiats.
 - Tests Genesis, vecteurs SHA, Merkle, cibles, endianness, parser Stratum, checkpoint, allocateur et chaîne mock complète.
@@ -62,6 +64,7 @@ Tout passe par JSON; aucune constante du code n'est à modifier.
 - `config/research.json`: scan historique Genesis court et reproductible.
 - `config/reduced_rounds.json`: laboratoire N=1..64.
 - `config/mock.json`: test Stratum local; aucune connexion à CKPool.
+- `config/context_analysis.json`: profils-exemples et paramètres du nouvel analyseur contextuel; toutes les tailles restent modifiables.
 
 Le mode live refuse de démarrer tant que `ckpool.username` vaut `CHANGE_ME`. Remplacer cette valeur par `ADRESSE_BITCOIN[.worker]`. Le password par défaut est `x`.
 
@@ -130,7 +133,7 @@ noyaux OpenCL.
 
 ## Cartographie GPU d'un header-space
 
-L'exécutable research indépendant `sha256_header_space` cartographie exactement une plage de nonces d'un header fixe. Il produit un minimum 256 bits et les compteurs T8, T12, T16, T20, T24, T28 et T32 par zone, sans sauvegarder les hashes individuels et sans utiliser le chemin du mineur live.
+L'exécutable research indépendant `sha256_header_space` cartographie exactement une plage de nonces d'un header fixe. Il produit un minimum 256 bits, le nombre exact de hits sous la target réseau et les compteurs pré-déclarés T26, T28, T30, T32, T34, T36 et T38 par zone, sans sauvegarder les hashes individuels et sans utiliser le chemin du mineur live.
 
 Validation Genesis CPU/GPU sur `2^20` nonces:
 
@@ -139,6 +142,12 @@ build\windows-release\Release\sha256_header_space.exe --preset genesis --nonce-c
 ```
 
 Un full-space utilise `--full-space`; la zone scientifique par défaut vaut `2^20`. Les sorties déterministes sont placées sous `results/header_space/<experiment_id>/`. L'architecture, l'endianness PoW, le CLI complet, les sorties et les limites de reprise sont documentés dans [docs/header_space_scanner.md](docs/header_space_scanner.md).
+
+## Analyse contextuelle B(J,e)
+
+Lancer `05_ANALYSEUR_CONTEXTE.bat`. Les profils QUICK, PILOT et FULL ne sont que des valeurs initiales visibles: avant toute campagne, un benchmark court mesure le GPU puis l'outil affiche prevhash, contextes, répartition, total de `B(J,e)`, total de hashes, durée et stockage estimés. L'utilisateur peut accepter, modifier ou annuler.
+
+Le dimensionnement accepte indépendamment un total de blocs, un budget de temps, ou une géométrie `prevhash + contextes + blocs par contexte`. Une campagne validée scanne toujours chaque espace `B(J,e)` sur les `2^32` nonces; le mode smoke partiel est explicitement marqué comme non scientifique. Voir [docs/context_analyzer.md](docs/context_analyzer.md).
 
 ## Test Stratum bout en bout
 
@@ -189,7 +198,7 @@ Cette distinction est nécessaire: garantir zéro rejeu après une perte de cour
 
 ## Résultats et arrêt
 
-Les candidats réseau sont toujours écrits dans `results/block_candidate_YYYYMMDD_HHMMSS_mmm.json`. En plus, chaque share live est écrite dans `results/share_audit_YYYYMMDD_HHMMSS_mmm.json` avant `mining.submit`, puis mise à jour atomiquement avec son identifiant, son statut, la réponse JSON-RPC exacte et sa latence. `logging.save_share_audits` contrôle ces audits et vaut `true` par défaut. Aucun mot de passe n'est sérialisé.
+Les candidats réseau sont toujours écrits dans `results/block_candidate_YYYYMMDD_HHMMSS_mmm.json`. Les petites shares restent soumises à CKPool mais ne sont plus affichées individuellement par défaut. Leur cycle de vie est ajouté dans `results/share_audit_recent/shares_YYYYMMDD_HH00.jsonl`, purgé selon `logging.share_audit_retention_hours`. Les événements importants sont ajoutés définitivement à `results/statistics/high_difficulty_shares.jsonl`; les records vivent aussi dans `best_pow_all_time.json` et `best_pow_records.jsonl`. Aucun mot de passe n'est sérialisé et `stratum_jobs.jsonl` n'est jamais concerné par la purge.
 
 Arrêter avec `Ctrl+C`. Le contrôleur invalide la génération, rejoint CPU/GPU et écrit un dernier checkpoint.
 

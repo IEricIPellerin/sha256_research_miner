@@ -12,7 +12,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -551,6 +553,84 @@ TEST_CASE(
   clReleaseMemObject(count_buffer);
   clReleaseMemObject(target_buffer);
   clReleaseMemObject(prefix_buffer);
+  clReleaseKernel(kernel);
+}
+
+TEST_CASE("OpenCL observed bootstrap returns the exact non-share minimum") {
+  OpenClFixture opencl;
+  cl_int error = CL_SUCCESS;
+  const auto kernel = clCreateKernel(opencl.program, "sha256d_scan_observed", &error);
+  cl_require(error, "clCreateKernel sha256d_scan_observed");
+  auto header = genesis_header();
+  constexpr std::uint32_t start = 0x10203040U;
+  constexpr std::uint32_t count = 4096U;
+  constexpr std::size_t local = 64U;
+  constexpr std::size_t groups = count / local;
+  std::array<std::uint8_t, 32> impossible_target{};
+  std::uint32_t candidate_count = 0;
+  std::array<std::uint32_t, 64> candidates{};
+  std::vector<std::uint32_t> minima(groups * 9U);
+  const auto prefix = clCreateBuffer(opencl.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                     76U, header.data(), &error);
+  cl_require(error, "observed prefix");
+  const auto target = clCreateBuffer(opencl.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                     impossible_target.size(), impossible_target.data(), &error);
+  cl_require(error, "observed target");
+  const auto count_buffer = clCreateBuffer(opencl.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                           sizeof(candidate_count), &candidate_count, &error);
+  cl_require(error, "observed count");
+  const auto candidate_buffer = clCreateBuffer(opencl.context, CL_MEM_WRITE_ONLY,
+                                                sizeof(candidates), nullptr, &error);
+  cl_require(error, "observed candidates");
+  const auto minima_buffer = clCreateBuffer(opencl.context, CL_MEM_WRITE_ONLY,
+                                             minima.size() * sizeof(std::uint32_t), nullptr, &error);
+  cl_require(error, "observed minima");
+  cl_require(clSetKernelArg(kernel, 0, sizeof(prefix), &prefix), "observed arg0");
+  cl_require(clSetKernelArg(kernel, 1, sizeof(start), &start), "observed arg1");
+  cl_require(clSetKernelArg(kernel, 2, sizeof(count), &count), "observed arg2");
+  cl_require(clSetKernelArg(kernel, 3, sizeof(target), &target), "observed arg3");
+  cl_require(clSetKernelArg(kernel, 4, sizeof(count_buffer), &count_buffer), "observed arg4");
+  cl_require(clSetKernelArg(kernel, 5, sizeof(candidate_buffer), &candidate_buffer), "observed arg5");
+  cl_require(clSetKernelArg(kernel, 6, sizeof(minima_buffer), &minima_buffer), "observed arg6");
+  cl_require(clSetKernelArg(kernel, 7, local * 9U * sizeof(std::uint32_t), nullptr), "observed arg7");
+  const std::size_t global = count;
+  cl_require(clEnqueueNDRangeKernel(opencl.queue, kernel, 1, nullptr, &global, &local,
+                                    0, nullptr, nullptr), "observed launch");
+  cl_require(clFinish(opencl.queue), "observed finish");
+  cl_require(clEnqueueReadBuffer(opencl.queue, minima_buffer, CL_TRUE, 0,
+                                 minima.size() * sizeof(std::uint32_t), minima.data(),
+                                 0, nullptr, nullptr), "observed minima read");
+
+  std::uint32_t gpu_nonce = minima[8U];
+  std::array<std::uint32_t, 8> gpu_value{};
+  std::copy_n(minima.begin(), 8U, gpu_value.begin());
+  for (std::size_t group = 1; group < groups; ++group) {
+    std::array<std::uint32_t, 8> value{};
+    std::copy_n(minima.begin() + group * 9U, 8U, value.begin());
+    const auto nonce = minima[group * 9U + 8U];
+    if (value < gpu_value || (value == gpu_value && nonce < gpu_nonce)) {
+      gpu_value = value;
+      gpu_nonce = nonce;
+    }
+  }
+  std::string cpu_best;
+  std::uint32_t cpu_nonce = 0;
+  for (std::uint32_t offset = 0; offset < count; ++offset) {
+    srm::bitcoin::set_nonce(header, start + offset);
+    const auto hash = srm::crypto::bitcoin_hash_hex(srm::crypto::sha256d(header));
+    if (cpu_best.empty() || hash < cpu_best) { cpu_best = hash; cpu_nonce = start + offset; }
+  }
+  std::ostringstream gpu_hex;
+  gpu_hex << std::hex << std::setfill('0');
+  for (const auto word : gpu_value) gpu_hex << std::setw(8) << word;
+  REQUIRE_EQ(gpu_hex.str(), cpu_best);
+  REQUIRE_EQ(gpu_nonce, cpu_nonce);
+
+  clReleaseMemObject(minima_buffer);
+  clReleaseMemObject(candidate_buffer);
+  clReleaseMemObject(count_buffer);
+  clReleaseMemObject(target);
+  clReleaseMemObject(prefix);
   clReleaseKernel(kernel);
 }
 

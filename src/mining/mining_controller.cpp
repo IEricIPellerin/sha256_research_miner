@@ -7,6 +7,7 @@
 #include "crypto/reduced_sha256.h"
 #include "crypto/sha256d.h"
 #include "logging/result_logger.h"
+#include "logging/best_pow_tracker.h"
 #include "mining/benchmark.h"
 #include "mining/cpu_miner.h"
 #include "mining/gpu_miner.h"
@@ -875,6 +876,7 @@ struct MiningController::Impl {
   config::AppConfig config;
   telemetry::Telemetry telemetry;
   logging::ResultLogger logger;
+  logging::BestPowTracker best_pow;
   WorkAllocator allocator;
   std::atomic<std::uint64_t> active_generation{0};
   std::unique_ptr<CpuMiner> cpu;
@@ -896,7 +898,10 @@ struct MiningController::Impl {
   explicit Impl(config::AppConfig value)
       : config(std::move(value)), telemetry(config.console.refresh_ms),
         logger(config.logging.directory, config.logging.save_session_log,
-               config.logging.save_block_candidates, config.logging.save_share_audits),
+               config.logging.save_block_candidates, config.logging.save_share_audits,
+               config.logging.share_audit_retention_hours,
+               config.logging.permanent_high_difficulty_threshold),
+        best_pow(config.logging.directory),
         allocator(checkpoint::StateStore(config.project_root / "state" / allocator_state_name(config.mode)),
                   config::mode_name(config.mode)) {
     const auto saved = allocator.snapshot();
@@ -966,22 +971,64 @@ struct MiningController::Impl {
     solution.network_target = bitcoin::target_hex(candidate.context.network_target);
     solution.share_target = bitcoin::target_hex(candidate.context.share_target);
     solution.share_difficulty = candidate.context.share_difficulty;
+    solution.hash_difficulty = bitcoin::difficulty_from_hash(candidate.digest);
+    solution.network_difficulty = bitcoin::difficulty_from_target(candidate.context.network_target);
+    solution.network_difficulty_ratio = solution.network_difficulty > 0.0
+        ? solution.hash_difficulty / solution.network_difficulty : 0.0;
+    solution.worker = candidate.worker;
     solution.detected_timestamp_utc = logging::ResultLogger::utc_now();
     solution.network_candidate = candidate.network_candidate;
+    solution.share_candidate = candidate.share_candidate;
     return solution;
   }
 
   void on_candidate(Candidate candidate) {
-    if (candidate.context.generation != active_generation.load(std::memory_order_acquire)) {
-      return;
-    }
+    const bool active = candidate.context.generation ==
+        active_generation.load(std::memory_order_acquire);
     auto solution = make_solution(candidate);
-    telemetry.shares.fetch_add(1, std::memory_order_relaxed);
     telemetry.observe_best(solution.hash);
-    event("[SHARE] trouvée hash=" + solution.hash + " nonce_stratum=" + solution.nonce +
-          " nonce_header_le=" + solution.nonce_header_le);
+    const auto total_hashes = telemetry.cpu_hashes.load(std::memory_order_relaxed) +
+                              telemetry.gpu_hashes.load(std::memory_order_relaxed) + 1U;
+    const auto uptime_ms = prior_uptime_ms + static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    logging::BestPowUpdate record;
+    try {
+      record = best_pow.observe(solution, total_hashes, uptime_ms);
+    } catch (const std::exception& error) {
+      event("[RECORD POW] persistance impossible: " + std::string(error.what()));
+    }
+    if (record.is_record) {
+      event("[RECORD POW] nouveau record hash=" + solution.hash +
+            " difficulté=" + std::to_string(solution.hash_difficulty) +
+            " worker=" + solution.worker);
+      try { logger.save_permanent_event(solution, "personal_record"); }
+      catch (const checkpoint::PersistenceError& error) {
+        event("[RECORD POW] historique permanent non sauvegardé: " + std::string(error.what()));
+      }
+    }
+    if (!active) return;  // local PoW remains recorded; stale Stratum work is never submitted
+    if (!solution.share_candidate && !solution.network_candidate) return;
+
+    telemetry.shares.fetch_add(1, std::memory_order_relaxed);
+    if (solution.network_candidate || record.is_record ||
+        solution.hash_difficulty >= config.console.high_difficulty_threshold) {
+      event("[SHARE] trouvée hash=" + solution.hash +
+            " difficulté=" + std::to_string(solution.hash_difficulty) +
+            " nonce_stratum=" + solution.nonce +
+            " nonce_header_le=" + solution.nonce_header_le);
+    }
     if (solution.network_candidate) {
       event("[BLOCK] candidat réseau détecté");
+    }
+    if (!record.is_record && (solution.network_candidate ||
+        solution.hash_difficulty >= config.logging.permanent_high_difficulty_threshold)) {
+      try {
+        logger.save_permanent_event(
+            solution, solution.network_candidate ? "network_candidate" : "high_difficulty_share");
+      } catch (const checkpoint::PersistenceError& error) {
+        event("[SHARE] historique permanent non sauvegardé: " + std::string(error.what()));
+      }
     }
 
     const bool can_submit = client && client->connected() && client->authorized();
@@ -1269,14 +1316,21 @@ struct MiningController::Impl {
         const auto item = pending_submissions.find(id);
         if (item != pending_submissions.end()) { solution = std::move(item->second); pending_submissions.erase(item); found = true; }
       }
-      if (accepted) { telemetry.accepted.fetch_add(1); event("[SHARE] acceptée id=" + std::to_string(id)); }
-      else { telemetry.rejected.fetch_add(1); event("[SHARE] rejetée id=" + std::to_string(id) + " réponse=" + response.dump()); }
+      if (accepted) telemetry.accepted.fetch_add(1);
+      else telemetry.rejected.fetch_add(1);
       if (found) {
         solution.response_timestamp_utc = logging::ResultLogger::utc_now();
         solution.submission_status = accepted ? "accepted" : "rejected";
         solution.accepted = accepted;
         solution.submission_latency_us = latency;
         solution.server_response = response;
+        if (!accepted) {
+          event("[SHARE] rejetée id=" + std::to_string(id) + " réponse=" + response.dump());
+        } else if (solution.network_candidate || solution.personal_record ||
+                   solution.hash_difficulty >= config.console.high_difficulty_threshold) {
+          event("[SHARE] acceptée id=" + std::to_string(id) +
+                " difficulté=" + std::to_string(solution.hash_difficulty));
+        }
         if (solution.network_candidate) {
           try { logger.update_candidate(solution); }
           catch (const checkpoint::PersistenceError& error) {
@@ -1289,6 +1343,9 @@ struct MiningController::Impl {
             event("[SHARE] réponse non sauvegardée dans l'audit: " + std::string(error.what()));
           }
         }
+      }
+      else if (!accepted) {
+        event("[SHARE] rejetée id inconnu=" + std::to_string(id) + " réponse=" + response.dump());
       }
     };
     callbacks.disconnected = [this]() {
@@ -1305,11 +1362,21 @@ struct MiningController::Impl {
     telemetry.set_connection(false, false, config.ckpool.host + ":" + std::to_string(config.ckpool.port));
     client->start();
     auto next_checkpoint = std::chrono::steady_clock::now() + std::chrono::milliseconds(config.checkpoint_interval_ms);
+    auto next_retention_purge = std::chrono::steady_clock::now() + std::chrono::hours(1);
     while (!stop_requested.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (std::chrono::steady_clock::now() >= next_checkpoint) {
         safe_checkpoint("sauvegarde périodique impossible");
         next_checkpoint = std::chrono::steady_clock::now() + std::chrono::milliseconds(config.checkpoint_interval_ms);
+      }
+      if (std::chrono::steady_clock::now() >= next_retention_purge) {
+        try {
+          const auto removed = logger.purge_expired_share_audits();
+          if (removed > 0U) event("[RÉTENTION] audits de petites shares expirés supprimés=" + std::to_string(removed));
+        } catch (const std::exception& error) {
+          event("[RÉTENTION] purge impossible: " + std::string(error.what()));
+        }
+        next_retention_purge = std::chrono::steady_clock::now() + std::chrono::hours(1);
       }
     }
     active_generation.fetch_add(1);

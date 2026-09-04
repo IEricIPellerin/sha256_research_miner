@@ -6,6 +6,9 @@
 /results/*.log
 /results/*.tmp
 /results/header_space/
+/results/context_analysis/
+/results/share_audit_recent/
+/results/statistics/
 /results/whitebox/
 !/results/.gitkeep
 /state/*.tmp

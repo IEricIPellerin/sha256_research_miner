@@ -132,4 +132,25 @@ bool hash_meets_target(const crypto::Digest& digest, const Target256& target) {
   return true;
 }
 
+double difficulty_from_target(const Target256& target) {
+  const auto diff1 = target_from_hex(
+      "00000000ffff0000000000000000000000000000000000000000000000000000");
+  long double numerator = 0.0L;
+  long double denominator = 0.0L;
+  for (std::size_t i = 0; i < 32; ++i) {
+    numerator = numerator * 256.0L + diff1.big_endian[i];
+    denominator = denominator * 256.0L + target.big_endian[i];
+  }
+  if (denominator == 0.0L) return std::numeric_limits<double>::infinity();
+  return static_cast<double>(numerator / denominator);
+}
+
+double difficulty_from_hash(const crypto::Digest& digest) {
+  Target256 hash_value{};
+  for (std::size_t i = 0; i < digest.size(); ++i) {
+    hash_value.big_endian[i] = digest[digest.size() - 1U - i];
+  }
+  return difficulty_from_target(hash_value);
+}
+
 }  // namespace srm::bitcoin

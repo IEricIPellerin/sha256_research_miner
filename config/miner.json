@@ -18,13 +18,16 @@
   "console": {
     "refresh_ms": 5000,
     "show_job_events": true,
-    "show_best_hash": true
+    "show_best_hash": true,
+    "high_difficulty_threshold": 10000
   },
   "logging": {
     "directory": "results",
     "save_session_log": true,
     "save_block_candidates": true,
-    "save_share_audits": true
+    "save_share_audits": true,
+    "share_audit_retention_hours": 24,
+    "permanent_high_difficulty_threshold": 10000
   },
   "checkpoint": { "interval_ms": 2000 }
 }

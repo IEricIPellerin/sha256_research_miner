@@ -4,6 +4,7 @@
 #include "test_support.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -61,6 +62,17 @@ std::filesystem::path unique_temp(const std::string& stem) {
       (stem + "_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 }
 
+std::map<std::string, std::string> directory_snapshot(
+    const std::filesystem::path& root) {
+  std::map<std::string, std::string> result;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (!entry.is_regular_file()) continue;
+    result.emplace(std::filesystem::relative(entry.path(), root).generic_string(),
+                   trajectory::file_sha256(entry.path()));
+  }
+  return result;
+}
+
 bool throws_with(const std::function<void()>& function, const std::string& text) {
   try { function(); }
   catch (const std::exception& error) { return std::string(error.what()).find(text) != std::string::npos; }
@@ -116,6 +128,107 @@ TEST_CASE("GPU sparse capture exactly matches CPU when OpenCL GPU is available")
   REQUIRE_EQ(left, right);
   REQUIRE_EQ(gpu.total_hit_count, cpu.total_hit_count);
   REQUIRE(!gpu.overflow);
+}
+
+TEST_CASE("bounded worker pool propagates worker exceptions to its coordinator") {
+  std::atomic<std::size_t> completed{0U};
+  REQUIRE(throws_with([&] {
+    trajectory::detail::run_bounded_workers(32U, 4U,
+        [&](const std::size_t, const std::size_t task) {
+          if (task == 3U) throw std::runtime_error("synthetic worker failure");
+          ++completed;
+        });
+  }, "synthetic worker failure"));
+  REQUIRE(completed.load() < 32U);
+}
+
+TEST_CASE("CPU nonce partitions have exact coverage without holes or overlaps") {
+  constexpr std::uint64_t nonce_count = 1009U;
+  for (const auto threads : {1U, 2U, 4U, 8U, 16U, 32U}) {
+    const auto partitions = trajectory::partition_cpu_nonce_range(
+        nonce_count, threads);
+    REQUIRE_EQ(partitions.size(), threads);
+    std::uint64_t cursor = 0U;
+    for (const auto& partition : partitions) {
+      REQUIRE_EQ(partition.nonce_start, cursor);
+      REQUIRE(partition.nonce_count > 0U);
+      cursor += partition.nonce_count;
+    }
+    REQUIRE_EQ(cursor, nonce_count);
+  }
+  const auto result = trajectory::trajectory_cpu_benchmark(4U, 4096U);
+  REQUIRE_EQ(result.at("threads").get<std::size_t>(), 4U);
+  REQUIRE_EQ(result.at("nonce_count").get<std::uint64_t>(), 4096U);
+  REQUIRE(result.at("exact_partition_coverage").get<bool>());
+  REQUIRE(!result.at("scientific_ground_truth").get<bool>());
+}
+
+TEST_CASE("GPU workers one two and four return the same complete BJE nonce sets") {
+  if (!hs::opencl_compiled() || hs::enumerate_gpu_devices().empty()) return;
+  std::vector<trajectory::GpuBjeWorkItem> items;
+  for (std::size_t i = 0U; i < 3U; ++i) {
+    auto header = hs::genesis_header();
+    header[68] ^= static_cast<std::uint8_t>(i + 1U);
+    items.push_back({"parallel-bje-" + std::to_string(i), header});
+  }
+  const auto kernel = std::filesystem::path(SRM_SOURCE_DIR) /
+      "kernels" / "header_space_map.cl";
+  const auto run = [&](const std::size_t workers) {
+    return trajectory::run_gpu_workload(items, kernel, "auto", 64U,
+        workers, 0U, 65536U, 10U, 128U);
+  };
+  const auto canonical = [&](const trajectory::GpuWorkloadResult& workload) {
+    std::map<std::string, std::vector<std::uint32_t>> sets;
+    REQUIRE_EQ(workload.results.size(), items.size());
+    for (std::size_t i = 0U; i < workload.results.size(); ++i) {
+      const auto& result = workload.results[i];
+      REQUIRE_EQ(result.block_id, items[i].block_id);
+      auto nonces = result.scan.nonces;
+      std::sort(nonces.begin(), nonces.end());
+      REQUIRE(std::adjacent_find(nonces.begin(), nonces.end()) == nonces.end());
+      REQUIRE_EQ(trajectory::reconstruct_and_sort(
+          items[i].header, nonces, 10U, true).size(), nonces.size());
+      REQUIRE(sets.emplace(result.block_id, std::move(nonces)).second);
+    }
+    REQUIRE_EQ(sets.size(), items.size());
+    return sets;
+  };
+  const auto one = canonical(run(1U));
+  const auto two = canonical(run(2U));
+  const auto four = canonical(run(4U));
+  REQUIRE_EQ(one, two);
+  REQUIRE_EQ(one, four);
+}
+
+TEST_CASE("trajectory throughput benchmark leaves its frozen campaign byte-identical") {
+  if (!hs::opencl_compiled() || hs::enumerate_gpu_devices().empty()) return;
+  const auto root = unique_temp("srm_trajectory_throughput_readonly");
+  std::filesystem::create_directories(root);
+  const auto archive_path = root / "archive.jsonl";
+  { std::ofstream output(archive_path); output << "frozen test archive\n"; }
+  const auto kernel = std::filesystem::path(SRM_SOURCE_DIR) /
+      "kernels" / "header_space_map.cl";
+  const auto plan = trajectory::make_plan(
+      fake_archive(4U), {2U, 42U, 2U}, benchmark());
+  const auto campaign = trajectory::create_campaign(
+      plan, root, archive_path, kernel, "traj_throughput_readonly");
+  const auto manifest = srm::checkpoint::StateStore(campaign / "manifest.json")
+      .load_or(nlohmann::json());
+  const auto before = directory_snapshot(campaign);
+  const auto result = trajectory::trajectory_throughput_benchmark(
+      campaign, kernel, "auto", 64U, {2U, 2U, 4096U});
+  const auto after = directory_snapshot(campaign);
+  REQUIRE_EQ(before, after);
+  REQUIRE_EQ(result.at("bje_count").get<std::size_t>(), 2U);
+  REQUIRE_EQ(result.at("gpu_workers").get<std::size_t>(), 2U);
+  REQUIRE_EQ(result.at("first_block_id").get<std::string>(),
+             manifest.at("blocks").at(0U).at("block_id").get<std::string>());
+  REQUIRE_EQ(result.at("last_block_id").get<std::string>(),
+             manifest.at("blocks").at(1U).at("block_id").get<std::string>());
+  REQUIRE_EQ(result.at("ordered_block_ids_sha256").get<std::string>().size(), 64U);
+  REQUIRE(result.at("exact_cpu_verification").get<bool>());
+  REQUIRE(!result.at("scientific_ground_truth").get<bool>());
+  std::filesystem::remove_all(root);
 }
 
 TEST_CASE("Y sorting is numeric with deterministic nonce tie break") {

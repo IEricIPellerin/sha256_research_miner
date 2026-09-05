@@ -123,8 +123,9 @@ add_library(srm_header_space
   src/research/sha256d_whitebox.cpp
   src/research/sha256d_whitebox_campaign.cpp
   src/research/sha256d_whitebox_transfer.cpp)
+find_package(Threads REQUIRED)
 target_include_directories(srm_header_space PUBLIC include)
-target_link_libraries(srm_header_space PUBLIC srm_core)
+target_link_libraries(srm_header_space PUBLIC srm_core Threads::Threads)
 if(SRM_CODE_VERSION)
   target_compile_definitions(srm_header_space PRIVATE SRM_CODE_VERSION="${SRM_CODE_VERSION}")
 endif()

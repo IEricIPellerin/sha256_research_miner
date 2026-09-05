@@ -104,11 +104,23 @@ if not defined BJE_COUNT set "BJE_COUNT=16"
 for /f "delims=0123456789" %%A in ("%BJE_COUNT%") do if not "%%A"=="" goto phase3invalid
 set /a BJE_NUMBER=%BJE_COUNT% 2>nul
 if %BJE_NUMBER% LEQ 0 goto phase3invalid
-"%ANALYZER%" trajectory-new --bje %BJE_COUNT%
+echo Ce nombre concerne les jobs GPU concurrents, pas les threads CPU.
+set "GPU_WORKERS="
+set /p "GPU_WORKERS=GPU workers simultanés [1]: "
+if not defined GPU_WORKERS set "GPU_WORKERS=1"
+for /f "delims=0123456789" %%A in ("%GPU_WORKERS%") do if not "%%A"=="" goto phase3workersinvalid
+set /a GPU_WORKER_NUMBER=%GPU_WORKERS% 2>nul
+if %GPU_WORKER_NUMBER% LEQ 0 goto phase3workersinvalid
+"%ANALYZER%" trajectory-new --bje %BJE_COUNT% --gpu-workers %GPU_WORKERS%
 goto done
 
 :phase3invalid
 echo [ERREUR] Le nombre de BJE doit etre un entier strictement positif.
+pause
+goto menu
+
+:phase3workersinvalid
+echo [ERREUR] Le nombre de GPU workers simultanés doit etre un entier strictement positif.
 pause
 goto menu
 

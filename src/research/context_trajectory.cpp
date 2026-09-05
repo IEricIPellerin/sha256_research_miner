@@ -8,19 +8,25 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -249,6 +255,9 @@ Plan make_plan(const std::vector<context_campaign::ArchivedContext>& archive,
                Request request,
                context_campaign::BenchmarkResult benchmark) {
   if (request.bje_count == 0U) throw std::invalid_argument("--bje must be a positive integer");
+  if (request.gpu_workers == 0U) {
+    throw std::invalid_argument("--gpu-workers must be at least 1");
+  }
   if (request.bje_count > std::numeric_limits<std::uint64_t>::max() /
                               header_space::kNonceSpaceSize) {
     throw std::invalid_argument("--bje is too large to represent planned hashes exactly");
@@ -363,6 +372,7 @@ nlohmann::json plan_preview_json(const Plan& plan) {
   const auto [prev_low, prev_high] = extrema(by_prevhash);
   const auto [context_low, context_high] = extrema(by_context);
   return {{"requested_bje", plan.request.bje_count}, {"seed", plan.request.seed},
+          {"gpu_workers", plan.request.gpu_workers},
           {"distinct_prevhashes", by_prevhash.size()}, {"stratum_contexts", by_context.size()},
           {"bje_per_prevhash_min", prev_low}, {"bje_per_prevhash_max", prev_high},
           {"bje_per_context_min", context_low}, {"bje_per_context_max", context_high},
@@ -400,6 +410,7 @@ std::filesystem::path create_campaign(const Plan& plan,
       {"schema_version", 1}, {"experiment", "PHASE_3_POST_SCAN_Y_SORT_TRAJECTORY"},
       {"campaign_id", id}, {"created_at_utc", logging::ResultLogger::utc_now()},
       {"code_version", code_version()}, {"seed", plan.request.seed},
+      {"gpu_workers_at_creation", plan.request.gpu_workers},
       {"archive", {{"path", std::filesystem::absolute(archive_source).string()},
                    {"sha256", file_sha256(archive_source)}, {"frozen_at_creation", true}}},
       {"planned_bje", plan.request.bje_count}, {"planned_hashes", plan.total_hashes},
@@ -679,22 +690,366 @@ void refresh_capture_summary(const std::filesystem::path& directory,
 
 }  // namespace
 
+namespace detail {
+
+void run_bounded_workers(
+    const std::size_t task_count,
+    const std::size_t worker_count,
+    const std::function<void(std::size_t, std::size_t)>& task,
+    const std::function<void(std::size_t)>& on_completion) {
+  if (worker_count == 0U) {
+    throw std::invalid_argument("worker_count must be at least 1");
+  }
+  if (!task) throw std::invalid_argument("worker task is empty");
+  if (task_count == 0U) return;
+
+  const auto active_workers = std::min(worker_count, task_count);
+  std::atomic<std::size_t> next_task{0U};
+  std::atomic<bool> stop{false};
+  std::mutex state_mutex;
+  std::condition_variable state_changed;
+  std::deque<std::size_t> completed_tasks;
+  std::size_t finished_workers = 0U;
+  std::exception_ptr worker_exception;
+  std::vector<std::thread> workers;
+  workers.reserve(active_workers);
+
+  const auto worker_body = [&](const std::size_t worker_index) {
+    try {
+      while (!stop.load(std::memory_order_acquire)) {
+        const auto task_index = next_task.fetch_add(1U, std::memory_order_relaxed);
+        if (task_index >= task_count) break;
+        task(worker_index, task_index);
+        {
+          std::lock_guard lock(state_mutex);
+          completed_tasks.push_back(task_index);
+        }
+        state_changed.notify_one();
+      }
+    } catch (...) {
+      {
+        std::lock_guard lock(state_mutex);
+        if (!worker_exception) worker_exception = std::current_exception();
+      }
+      stop.store(true, std::memory_order_release);
+      state_changed.notify_one();
+    }
+    {
+      std::lock_guard lock(state_mutex);
+      ++finished_workers;
+    }
+    state_changed.notify_one();
+  };
+
+  try {
+    for (std::size_t worker = 0U; worker < active_workers; ++worker) {
+      workers.emplace_back(worker_body, worker);
+    }
+  } catch (...) {
+    stop.store(true, std::memory_order_release);
+    for (auto& worker : workers) if (worker.joinable()) worker.join();
+    throw;
+  }
+
+  std::exception_ptr coordinator_exception;
+  for (;;) {
+    std::deque<std::size_t> ready;
+    bool all_workers_finished = false;
+    {
+      std::unique_lock lock(state_mutex);
+      state_changed.wait(lock, [&] {
+        return !completed_tasks.empty() || finished_workers == active_workers;
+      });
+      ready.swap(completed_tasks);
+      all_workers_finished = finished_workers == active_workers;
+    }
+    if (on_completion && !coordinator_exception) {
+      for (const auto task_index : ready) {
+        try {
+          on_completion(task_index);
+        } catch (...) {
+          coordinator_exception = std::current_exception();
+          stop.store(true, std::memory_order_release);
+          break;
+        }
+      }
+    }
+    if (all_workers_finished) {
+      std::lock_guard lock(state_mutex);
+      if (completed_tasks.empty()) break;
+    }
+  }
+
+  for (auto& worker : workers) if (worker.joinable()) worker.join();
+  if (coordinator_exception) std::rethrow_exception(coordinator_exception);
+  {
+    std::lock_guard lock(state_mutex);
+    if (worker_exception) std::rethrow_exception(worker_exception);
+  }
+}
+
+}  // namespace detail
+
+GpuWorkloadResult run_gpu_workload(
+    const std::vector<GpuBjeWorkItem>& items,
+    const std::filesystem::path& kernel,
+    const std::string& device,
+    const std::size_t local_size,
+    const std::size_t gpu_workers,
+    const std::uint64_t nonce_start,
+    const std::uint64_t nonce_count,
+    const unsigned threshold_bits,
+    const std::size_t initial_capacity,
+    const GpuCompletionHandler& on_completion) {
+  require(!items.empty(), "GPU workload requires at least one BJE");
+  require(gpu_workers >= 1U, "--gpu-workers must be at least 1");
+  (void)header_space::make_zone_layout(nonce_start, nonce_count, nonce_count);
+  require(initial_capacity > 0U, "sparse initial capacity must be positive");
+  header_space::PowValue zero{};
+  (void)header_space::below_power_of_two_threshold(zero, threshold_bits);
+  std::unordered_set<std::string> unique_ids;
+  for (const auto& item : items) {
+    require(!item.block_id.empty(), "GPU workload contains an empty block_id");
+    require(unique_ids.insert(item.block_id).second,
+            "GPU workload contains a duplicate block_id");
+  }
+
+  GpuWorkloadResult workload;
+  workload.gpu_workers = gpu_workers;
+  workload.results.resize(items.size());
+  // A worker index always addresses one private scanner. The bounded worker
+  // loop reuses that scanner for every BJE claimed by the same worker.
+  std::vector<std::unique_ptr<header_space::GpuScanner>> scanners;
+  scanners.reserve(gpu_workers);
+  const auto setup_started = std::chrono::steady_clock::now();
+  for (std::size_t worker = 0U; worker < gpu_workers; ++worker) {
+    scanners.push_back(std::make_unique<header_space::GpuScanner>(
+        device, kernel, local_size));
+  }
+  workload.setup_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - setup_started).count();
+  workload.device = scanners.front()->device();
+
+  const auto scan_started = std::chrono::steady_clock::now();
+  detail::run_bounded_workers(items.size(), gpu_workers,
+      [&](const std::size_t worker_index, const std::size_t task_index) {
+        auto scan = scanners[worker_index]->scan_sparse_hits_complete(
+            items[task_index].header, nonce_start, nonce_count,
+            threshold_bits, initial_capacity);
+        require(!scan.overflow && scan.total_hit_count == scan.nonces.size(),
+                "unresolved sparse overflow refused");
+        workload.results[task_index] = {items[task_index].block_id, std::move(scan)};
+      },
+      [&](const std::size_t task_index) {
+        if (on_completion) on_completion(task_index, workload.results[task_index]);
+      });
+  workload.scan_wall_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - scan_started).count();
+  for (std::size_t i = 0U; i < items.size(); ++i) {
+    require(workload.results[i].block_id == items[i].block_id,
+            "GPU workload lost or misassigned a BJE result");
+  }
+  return workload;
+}
+
+nlohmann::json trajectory_throughput_benchmark(
+    const std::filesystem::path& directory,
+    const std::filesystem::path& kernel,
+    const std::string& device,
+    const std::size_t local_size,
+    const ThroughputBenchmarkOptions options) {
+  const auto total_started = std::chrono::steady_clock::now();
+  require(options.bje_count > 0U, "trajectory throughput benchmark requires --bje N > 0");
+  require(options.gpu_workers > 0U, "--gpu-workers must be at least 1");
+  require(options.nonce_count > 0U && options.nonce_count <= header_space::kNonceSpaceSize,
+          "trajectory throughput benchmark nonce range is invalid");
+  require(options.bje_count <= std::numeric_limits<std::uint64_t>::max() /
+                                   options.nonce_count,
+          "trajectory throughput benchmark total hash count overflows uint64");
+
+  const auto manifest = checkpoint::StateStore(directory / "manifest.json")
+      .load_or(nlohmann::json());
+  require(manifest.value("experiment", "") == "PHASE_3_POST_SCAN_Y_SORT_TRAJECTORY",
+          "not a Phase 3 trajectory campaign");
+  require(manifest.at("capture").at("threshold_bits").get<unsigned>() ==
+              kProductionThresholdBits,
+          "trajectory throughput benchmark requires the frozen T20 workload");
+  require(manifest.at("blocks").size() >= options.bje_count,
+          "trajectory throughput benchmark requests more BJE than the frozen manifest");
+  require(std::filesystem::is_regular_file(kernel),
+          "trajectory throughput benchmark OpenCL kernel file is missing");
+  require(file_sha256(kernel) == manifest.at("kernel").at("sha256").get<std::string>(),
+          "trajectory throughput benchmark OpenCL kernel differs from frozen manifest");
+
+  std::vector<GpuBjeWorkItem> items;
+  items.reserve(options.bje_count);
+  std::string ordered_ids;
+  for (std::size_t i = 0U; i < options.bje_count; ++i) {
+    const auto& block = manifest.at("blocks").at(i);
+    const auto id = block.at("block_id").get<std::string>();
+    items.push_back({id, block_header(block)});
+    ordered_ids += id;
+    ordered_ids.push_back('\n');
+  }
+  const auto ordered_ids_sha256 = crypto::digest_hex(crypto::sha256(
+      std::span<const std::uint8_t>(
+          reinterpret_cast<const std::uint8_t*>(ordered_ids.data()),
+          ordered_ids.size())));
+
+  auto workload = run_gpu_workload(items, kernel, device, local_size,
+      options.gpu_workers, 0U, options.nonce_count,
+      kProductionThresholdBits, kInitialSparseCapacity);
+  std::vector<double> individual_seconds;
+  individual_seconds.reserve(workload.results.size());
+  std::uint64_t total_t20_hits = 0U;
+  std::uint64_t cpu_verified_hits = 0U;
+  std::uint64_t overflow_retries = 0U;
+  for (std::size_t i = 0U; i < workload.results.size(); ++i) {
+    auto& result = workload.results[i];
+    require(result.block_id == items[i].block_id,
+            "trajectory throughput benchmark BJE order changed");
+    std::size_t duplicates = 0U;
+    auto nonces = unique_sorted(std::move(result.scan.nonces), &duplicates);
+    require(duplicates == 0U, "duplicate nonce returned by sparse GPU capture");
+    const auto reconstructed = reconstruct_and_sort(
+        items[i].header, nonces, kProductionThresholdBits, true);
+    require(reconstructed.size() == result.scan.total_hit_count,
+            "CPU verification count mismatch");
+    total_t20_hits += result.scan.total_hit_count;
+    cpu_verified_hits += reconstructed.size();
+    overflow_retries += result.scan.overflow_retries;
+    individual_seconds.push_back(result.scan.elapsed_seconds);
+  }
+  const auto mean_seconds = individual_seconds.empty() ? 0.0 :
+      std::accumulate(individual_seconds.begin(), individual_seconds.end(), 0.0) /
+          individual_seconds.size();
+  std::sort(individual_seconds.begin(), individual_seconds.end());
+  const auto middle = individual_seconds.size() / 2U;
+  const auto median_seconds = individual_seconds.size() % 2U
+      ? individual_seconds[middle]
+      : (individual_seconds[middle - 1U] + individual_seconds[middle]) / 2.0;
+  const auto total_hashes = static_cast<std::uint64_t>(options.bje_count) *
+      options.nonce_count;
+  const auto aggregate_hps = workload.scan_wall_seconds > 0.0
+      ? static_cast<double>(total_hashes) / workload.scan_wall_seconds : 0.0;
+  const auto total_wall_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - total_started).count();
+  const auto device_name = workload.device.board_name.empty()
+      ? workload.device.name : workload.device.board_name;
+  return {{"command", "trajectory-throughput-benchmark"},
+          {"scientific_ground_truth", false},
+          {"campaign_id", manifest.at("campaign_id")},
+          {"bje_count", options.bje_count},
+          {"gpu_workers", options.gpu_workers},
+          {"device", device_name},
+          {"setup_seconds", workload.setup_seconds},
+          {"scan_wall_seconds", workload.scan_wall_seconds},
+          {"total_wall_seconds", total_wall_seconds},
+          {"total_hashes", total_hashes},
+          {"aggregate_hash_rate_hps", aggregate_hps},
+          {"aggregate_hash_rate_ghs", aggregate_hps / 1e9},
+          {"bje_per_second", workload.scan_wall_seconds > 0.0
+              ? static_cast<double>(options.bje_count) / workload.scan_wall_seconds : 0.0},
+          {"mean_individual_bje_scan_seconds", mean_seconds},
+          {"median_individual_bje_scan_seconds", median_seconds},
+          {"total_t20_hits", total_t20_hits},
+          {"cpu_verified_hits", cpu_verified_hits},
+          {"overflow_retries", overflow_retries},
+          {"exact_cpu_verification", total_t20_hits == cpu_verified_hits},
+          {"first_block_id", items.front().block_id},
+          {"last_block_id", items.back().block_id},
+          {"ordered_block_ids_sha256", ordered_ids_sha256}};
+}
+
+std::vector<CpuNoncePartition> partition_cpu_nonce_range(
+    const std::uint64_t nonce_count,
+    const std::size_t threads) {
+  require(threads >= 1U, "--threads must be at least 1");
+  require(nonce_count > 0U && nonce_count <= header_space::kNonceSpaceSize,
+          "--nonce-count must be in [1, 2^32]");
+  require(threads <= nonce_count,
+          "--threads cannot exceed --nonce-count");
+  std::vector<CpuNoncePartition> partitions;
+  partitions.reserve(threads);
+  const auto base = nonce_count / threads;
+  const auto remainder = nonce_count % threads;
+  std::uint64_t cursor = 0U;
+  for (std::size_t thread = 0U; thread < threads; ++thread) {
+    const auto count = base + (thread < remainder ? 1U : 0U);
+    partitions.push_back({cursor, count});
+    cursor += count;
+  }
+  require(cursor == nonce_count, "CPU nonce partition coverage mismatch");
+  return partitions;
+}
+
+nlohmann::json trajectory_cpu_benchmark(const std::size_t threads,
+                                        const std::uint64_t nonce_count) {
+  const auto partitions = partition_cpu_nonce_range(nonce_count, threads);
+  std::vector<header_space::SparseHitResult> scans(partitions.size());
+  const auto started = std::chrono::steady_clock::now();
+  detail::run_bounded_workers(partitions.size(), threads,
+      [&](const std::size_t, const std::size_t index) {
+        const auto& partition = partitions[index];
+        if (partition.nonce_count == 0U) return;
+        scans[index] = header_space::scan_sparse_hits_cpu_complete(
+            header_space::genesis_header(), partition.nonce_start,
+            partition.nonce_count, kProductionThresholdBits,
+            kInitialSparseCapacity);
+      });
+  const auto wall_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - started).count();
+  std::uint64_t expected_start = 0U;
+  std::uint64_t t20_hits = 0U;
+  bool exact_coverage = partitions.size() == threads;
+  for (std::size_t i = 0U; i < partitions.size(); ++i) {
+    exact_coverage = exact_coverage && partitions[i].nonce_start == expected_start;
+    expected_start += partitions[i].nonce_count;
+    t20_hits += scans[i].total_hit_count;
+  }
+  exact_coverage = exact_coverage && expected_start == nonce_count;
+  require(exact_coverage, "CPU nonce partitions contain a hole or overlap");
+  const auto hash_rate_hps = wall_seconds > 0.0
+      ? static_cast<double>(nonce_count) / wall_seconds : 0.0;
+  return {{"command", "trajectory-cpu-benchmark"},
+          {"threads", threads}, {"nonce_count", nonce_count},
+          {"nonce_start", 0}, {"threshold_bits", kProductionThresholdBits},
+          {"header", "bitcoin_genesis"},
+          {"wall_seconds", wall_seconds},
+          {"hash_rate_hps", hash_rate_hps},
+          {"hash_rate_mhs", hash_rate_hps / 1e6},
+          {"t20_hits", t20_hits},
+          {"exact_partition_coverage", exact_coverage},
+          {"scientific_ground_truth", false}};
+}
+
 int resume_campaign(const std::filesystem::path& directory,
                     const std::filesystem::path& kernel,
                     const std::string& device,
-                    const std::size_t local_size) {
+                    const std::size_t local_size,
+                    const std::size_t gpu_workers) {
   const auto manifest = checkpoint::StateStore(directory / "manifest.json").load_or(nlohmann::json());
   require(manifest.value("experiment", "") == "PHASE_3_POST_SCAN_Y_SORT_TRAJECTORY",
           "not a Phase 3 trajectory campaign");
   require(manifest.at("capture").at("threshold_bits").get<unsigned>() == kProductionThresholdBits,
           "scientific trajectory campaign threshold must remain fixed at T20");
+  require(gpu_workers >= 1U, "--gpu-workers must be at least 1");
   auto checkpoint_value = checkpoint::StateStore(directory / "checkpoint.json").load_or(nlohmann::json::object());
   std::uint64_t checkpoint_count = checkpoint_value.value("checkpoint_count", 0ULL);
   std::size_t completed = 0U;
-  for (const auto& block : manifest.at("blocks")) if (capture_is_complete(directory, block)) ++completed;
   const auto total = manifest.at("planned_bje").get<std::size_t>();
-  std::unique_ptr<header_space::GpuScanner> scanner;
-  if (completed < total) {
+  require(manifest.at("blocks").size() == total,
+          "trajectory manifest planned_bje does not match its frozen block list");
+  std::vector<const nlohmann::json*> pending_blocks;
+  std::vector<GpuBjeWorkItem> pending_items;
+  for (const auto& block : manifest.at("blocks")) {
+    if (capture_is_complete(directory, block)) {
+      ++completed;
+      continue;
+    }
+    pending_blocks.push_back(&block);
+  }
+  if (!pending_blocks.empty()) {
     if (!std::filesystem::is_regular_file(kernel)) {
       throw std::runtime_error(
           "trajectory resume refused: frozen OpenCL kernel file is missing");
@@ -704,80 +1059,93 @@ int resume_campaign(const std::filesystem::path& directory,
       throw std::runtime_error(
           "trajectory resume refused: OpenCL kernel SHA-256 differs from frozen manifest");
     }
-    scanner = std::make_unique<header_space::GpuScanner>(device, kernel, local_size);
-  }
-  for (const auto& block : manifest.at("blocks")) {
-    if (capture_is_complete(directory, block)) continue;
-    const auto id = block.at("block_id").get<std::string>();
-    const auto binary = directory / "captures" / (id + ".t20.bin");
-    const auto metadata_path = directory / "captures" / (id + ".json");
-    quarantine_if_present(binary);
-    quarantine_if_present(metadata_path);
-    quarantine_if_present(std::filesystem::path(binary.string() + ".tmp"));
-    auto header = block_header(block);
-    const auto scan = scanner->scan_sparse_hits_complete(
-        header, 0U, header_space::kNonceSpaceSize, kProductionThresholdBits,
-        kInitialSparseCapacity);
-    require(!scan.overflow && scan.total_hit_count == scan.nonces.size(),
-            "unresolved sparse overflow refused");
-    std::size_t duplicates = 0U;
-    auto nonces = unique_sorted(scan.nonces, &duplicates);
-    require(duplicates == 0U, "duplicate nonce returned by sparse GPU capture");
-    const auto temporary = std::filesystem::path(binary.string() + ".tmp");
-    write_nonce_file(temporary, nonces);
-    const auto verify_started = std::chrono::steady_clock::now();
-    const auto reconstructed = reconstruct_and_sort(header, nonces, kProductionThresholdBits, true);
-    require(reconstructed.size() == scan.total_hit_count, "CPU verification count mismatch");
-    const auto verify_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - verify_started).count();
-    const auto checksum = file_sha256(temporary);
-    std::filesystem::rename(temporary, binary);
-    const auto expected = 4096.0;
-    const auto z = (static_cast<double>(nonces.size()) - expected) / std::sqrt(expected);
-    const auto metadata = nlohmann::json{
-        {"schema_version", 1}, {"campaign_id", manifest.at("campaign_id")},
-        {"block_id", id}, {"partition", block.at("partition")},
-        {"prevhash", block.at("stratum_job").at("prevhash")},
-        {"work_fingerprint", block.at("work_fingerprint")},
-        {"job_id", block.at("stratum_job").at("job_id")},
-        {"extranonce1", block.at("subscription").at("extranonce1")},
-        {"extranonce2", block.at("extranonce2")},
-        {"extranonce2_size", block.at("subscription").at("extranonce2_size")},
-        {"version", block.at("stratum_job").at("version")},
-        {"nbits", block.at("stratum_job").at("nbits")},
-        {"ntime", block.at("stratum_job").at("ntime")},
-        {"merkle_root", block.at("merkle_root")},
-        {"header_prefix_76_bytes_hex", block.at("header_prefix_76_bytes_hex")},
-        {"nonce_start", 0}, {"nonce_count", header_space::kNonceSpaceSize},
-        {"scan_complete", true}, {"gpu_device", {{"name", scan.device.name},
-            {"board_name", scan.device.board_name}, {"vendor", scan.device.vendor},
-            {"driver", scan.device.driver}, {"compute_units", scan.device.compute_units}}},
-        {"elapsed_seconds", scan.elapsed_seconds}, {"kernel_seconds", scan.kernel_seconds},
-        {"hash_rate_hps", scan.elapsed_seconds > 0.0
-            ? static_cast<double>(header_space::kNonceSpaceSize) / scan.elapsed_seconds : 0.0},
-        {"threshold", "T20"}, {"threshold_bits", kProductionThresholdBits},
-        {"expected_hits", 4096}, {"observed_t20_count", nonces.size()},
-        {"total_hit_count", scan.total_hit_count}, {"captured_count", scan.captured_count},
-        {"count_z_score", z}, {"sparse_buffer_capacity", scan.capacity},
-        {"overflow_retries", scan.overflow_retries}, {"overflow", false},
-        {"cpu_verification_count", reconstructed.size()}, {"cpu_verify_seconds", verify_seconds},
-        {"cpu_verification_complete", true}, {"duplicate_count", duplicates},
-        {"capture_record_endian", "little-endian"}, {"capture_order", "nonce_numeric_ascending"},
-        {"capture_sha256", checksum}, {"status", "COMPLETE"}};
-    checkpoint::StateStore(metadata_path).save(metadata);
-    ++completed;
-    ++checkpoint_count;
-    checkpoint::StateStore(directory / "checkpoint.json").save({
-        {"schema_version", 1}, {"campaign_id", manifest.at("campaign_id")},
-        {"status", completed == total ? "COMPLETE" : "RUNNING"},
-        {"completed_bje", completed}, {"total_bje", total},
-        {"checkpoint_count", checkpoint_count}, {"last_completed_block_id", id},
-        {"updated_at_utc", logging::ResultLogger::utc_now()}});
-    std::cout << "[TRAJECTORY] BJE " << completed << '/' << total
-              << "  T20=" << nonces.size() << "  retries=" << scan.overflow_retries
-              << "  " << std::fixed << std::setprecision(3)
-              << (scan.elapsed_seconds > 0.0 ? header_space::kNonceSpaceSize / scan.elapsed_seconds / 1e9 : 0.0)
-              << " GH/s\n" << std::flush;
+    pending_items.reserve(pending_blocks.size());
+    for (const auto* block : pending_blocks) {
+      pending_items.push_back({block->at("block_id").get<std::string>(),
+                               block_header(*block)});
+    }
+    (void)run_gpu_workload(pending_items, kernel, device, local_size,
+        gpu_workers, 0U, header_space::kNonceSpaceSize,
+        kProductionThresholdBits, kInitialSparseCapacity,
+        // Completion handlers run on this coordinator thread, never on a GPU
+        // worker, so capture and checkpoint writes remain serialized.
+        [&](const std::size_t index, GpuBjeScanResult& result) {
+          const auto& block = *pending_blocks[index];
+          const auto& header = pending_items[index].header;
+          const auto id = block.at("block_id").get<std::string>();
+          require(result.block_id == id, "GPU worker returned the wrong BJE");
+          const auto& scan = result.scan;
+          std::size_t duplicates = 0U;
+          auto nonces = unique_sorted(std::move(result.scan.nonces), &duplicates);
+          require(duplicates == 0U, "duplicate nonce returned by sparse GPU capture");
+          const auto verify_started = std::chrono::steady_clock::now();
+          const auto reconstructed = reconstruct_and_sort(
+              header, nonces, kProductionThresholdBits, true);
+          require(reconstructed.size() == scan.total_hit_count,
+                  "CPU verification count mismatch");
+          const auto verify_seconds = std::chrono::duration<double>(
+              std::chrono::steady_clock::now() - verify_started).count();
+
+          const auto binary = directory / "captures" / (id + ".t20.bin");
+          const auto metadata_path = directory / "captures" / (id + ".json");
+          const auto temporary = std::filesystem::path(binary.string() + ".tmp");
+          quarantine_if_present(binary);
+          quarantine_if_present(metadata_path);
+          quarantine_if_present(temporary);
+          write_nonce_file(temporary, nonces);
+          const auto checksum = file_sha256(temporary);
+          std::filesystem::rename(temporary, binary);
+          const auto expected = 4096.0;
+          const auto z = (static_cast<double>(nonces.size()) - expected) /
+              std::sqrt(expected);
+          const auto metadata = nlohmann::json{
+              {"schema_version", 1}, {"campaign_id", manifest.at("campaign_id")},
+              {"block_id", id}, {"partition", block.at("partition")},
+              {"prevhash", block.at("stratum_job").at("prevhash")},
+              {"work_fingerprint", block.at("work_fingerprint")},
+              {"job_id", block.at("stratum_job").at("job_id")},
+              {"extranonce1", block.at("subscription").at("extranonce1")},
+              {"extranonce2", block.at("extranonce2")},
+              {"extranonce2_size", block.at("subscription").at("extranonce2_size")},
+              {"version", block.at("stratum_job").at("version")},
+              {"nbits", block.at("stratum_job").at("nbits")},
+              {"ntime", block.at("stratum_job").at("ntime")},
+              {"merkle_root", block.at("merkle_root")},
+              {"header_prefix_76_bytes_hex", block.at("header_prefix_76_bytes_hex")},
+              {"nonce_start", 0}, {"nonce_count", header_space::kNonceSpaceSize},
+              {"scan_complete", true}, {"gpu_workers", gpu_workers},
+              {"gpu_device", {{"name", scan.device.name},
+                  {"board_name", scan.device.board_name}, {"vendor", scan.device.vendor},
+                  {"driver", scan.device.driver}, {"compute_units", scan.device.compute_units}}},
+              {"elapsed_seconds", scan.elapsed_seconds}, {"kernel_seconds", scan.kernel_seconds},
+              {"hash_rate_hps", scan.elapsed_seconds > 0.0
+                  ? static_cast<double>(header_space::kNonceSpaceSize) / scan.elapsed_seconds : 0.0},
+              {"threshold", "T20"}, {"threshold_bits", kProductionThresholdBits},
+              {"expected_hits", 4096}, {"observed_t20_count", nonces.size()},
+              {"total_hit_count", scan.total_hit_count}, {"captured_count", scan.captured_count},
+              {"count_z_score", z}, {"sparse_buffer_capacity", scan.capacity},
+              {"overflow_retries", scan.overflow_retries}, {"overflow", false},
+              {"cpu_verification_count", reconstructed.size()}, {"cpu_verify_seconds", verify_seconds},
+              {"cpu_verification_complete", true}, {"duplicate_count", duplicates},
+              {"capture_record_endian", "little-endian"}, {"capture_order", "nonce_numeric_ascending"},
+              {"capture_sha256", checksum}, {"status", "COMPLETE"}};
+          checkpoint::StateStore(metadata_path).save(metadata);
+          ++completed;
+          ++checkpoint_count;
+          checkpoint::StateStore(directory / "checkpoint.json").save({
+              {"schema_version", 1}, {"campaign_id", manifest.at("campaign_id")},
+              {"status", completed == total ? "COMPLETE" : "RUNNING"},
+              {"completed_bje", completed}, {"total_bje", total},
+              {"checkpoint_count", checkpoint_count}, {"gpu_workers", gpu_workers},
+              {"last_completed_block_id", id},
+              {"updated_at_utc", logging::ResultLogger::utc_now()}});
+          std::cout << "[TRAJECTORY] BJE " << completed << '/' << total
+                    << "  T20=" << nonces.size() << "  retries=" << scan.overflow_retries
+                    << "  " << std::fixed << std::setprecision(3)
+                    << (scan.elapsed_seconds > 0.0
+                        ? header_space::kNonceSpaceSize / scan.elapsed_seconds / 1e9 : 0.0)
+                    << " GH/s\n" << std::flush;
+        });
   }
   refresh_capture_summary(directory, manifest);
   append_report(directory, "\n## Capture terminée\n\nTous les BJE planifiés disposent d'une capture T20 vérifiée CPU et protégée par SHA-256.\n");

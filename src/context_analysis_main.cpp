@@ -38,6 +38,9 @@ struct Arguments {
   std::optional<std::uint64_t> seed;
   std::optional<std::uint64_t> benchmark_nonces;
   std::uint64_t smoke_nonces{65536U};
+  std::size_t gpu_workers{1U};
+  std::optional<std::size_t> threads;
+  std::optional<std::uint64_t> nonce_count;
   std::string device;
   bool yes{false};
   bool finalize_holdout{false};
@@ -91,6 +94,21 @@ Arguments parse(const int argc, char** argv) {
     else if (key == "--device") args.device = next();
     else if (key == "--benchmark-nonces") args.benchmark_nonces = u64(next(), "benchmark nonce count");
     else if (key == "--smoke-nonces") args.smoke_nonces = u64(next(), "smoke nonce count");
+    else if (key == "--gpu-workers") {
+      const auto value = u64(next(), "GPU worker count");
+      if (value == 0U || value > std::numeric_limits<std::size_t>::max()) {
+        throw std::invalid_argument("--gpu-workers must be at least 1");
+      }
+      args.gpu_workers = static_cast<std::size_t>(value);
+    }
+    else if (key == "--threads") {
+      const auto value = u64(next(), "CPU thread count");
+      if (value == 0U || value > std::numeric_limits<std::size_t>::max()) {
+        throw std::invalid_argument("--threads must be at least 1");
+      }
+      args.threads = static_cast<std::size_t>(value);
+    }
+    else if (key == "--nonce-count") args.nonce_count = u64(next(), "nonce count");
     else if (key == "--yes") args.yes = true;
     else if (key == "--finalize-holdout") args.finalize_holdout = true;
     else if (key == "--check" || key == "--dry-run") args.phase2_check = true;
@@ -177,9 +195,14 @@ void print_help() {
       "  phase2-refinement --campaign <dossier> [--check] [--yes]\n"
       "         Grille ridge etendue, branche T30 et permutation max-stat;\n"
       "         discovery-only, sortie immuable separee\n"
-      "  trajectory-new --bje N [--seed S] [--yes]\n"
+      "  trajectory-new --bje N [--seed S] [--gpu-workers W] [--yes]\n"
       "         Phase 3 POST_SCAN; capture T20 sparse; analyse discovery seule\n"
-      "  trajectory-resume [--campaign <dossier>]\n"
+      "  trajectory-resume [--campaign <dossier>] [--gpu-workers W]\n"
+      "         W = GPU workers simultanés (défaut 1), pas des threads CPU\n"
+      "  trajectory-throughput-benchmark --campaign <dossier> --bje N --gpu-workers W\n"
+      "         Benchmark T20/2^32 en mémoire, non scientifique et lecture seule\n"
+      "  trajectory-cpu-benchmark --threads N --nonce-count M\n"
+      "         Benchmark CPU séparé, non scientifique\n"
       "  trajectory-analyze [--campaign <dossier>]\n"
       "  trajectory-export-bje --campaign <dossier> --block-id <id>\n"
       "  trajectory-trace --campaign <dossier> --block-id <id> --nonce N\n"
@@ -204,6 +227,7 @@ void print_trajectory_preview(const trajectory::Plan& plan, const std::string& d
             << "Durée estimée (secondes)        : " << value["estimated_seconds"] << '\n'
             << "Stockage sparse estimé (octets) : " << value["estimated_storage_bytes"] << '\n'
             << "Seed                            : " << value["seed"] << '\n'
+            << "GPU workers simultanés         : " << value["gpu_workers"] << '\n'
             << "Device demandé                  : " << device << '\n'
             << "Seuil production                : T20 (Y < 2^236)\n"
             << "Partitions par prevhash         : " << value["partitions"].dump() << '\n';
@@ -356,7 +380,34 @@ int run(const int argc, char** argv) {
     if (args.command == "trajectory-resume") {
       const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, true));
       std::cout << "Reprise Phase 3: " << campaign.string() << '\n';
-      return trajectory::resume_campaign(campaign, kernel, device, local_size);
+      return trajectory::resume_campaign(
+          campaign, kernel, device, local_size, args.gpu_workers);
+    }
+    if (args.command == "trajectory-throughput-benchmark") {
+      if (!args.campaign) {
+        throw std::invalid_argument(
+            "trajectory-throughput-benchmark requires --campaign");
+      }
+      if (!args.bje || *args.bje == 0U ||
+          *args.bje > std::numeric_limits<std::size_t>::max()) {
+        throw std::invalid_argument(
+            "trajectory-throughput-benchmark requires --bje N with N > 0");
+      }
+      const trajectory::ThroughputBenchmarkOptions options{
+          static_cast<std::size_t>(*args.bje), args.gpu_workers,
+          header_space::kNonceSpaceSize};
+      std::cout << trajectory::trajectory_throughput_benchmark(
+          *args.campaign, kernel, device, local_size, options).dump(2) << '\n';
+      return 0;
+    }
+    if (args.command == "trajectory-cpu-benchmark") {
+      if (!args.threads || !args.nonce_count) {
+        throw std::invalid_argument(
+            "trajectory-cpu-benchmark requires --threads N --nonce-count M");
+      }
+      std::cout << trajectory::trajectory_cpu_benchmark(
+          *args.threads, *args.nonce_count).dump(2) << '\n';
+      return 0;
     }
     if (args.command == "trajectory-analyze") {
       const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, false));
@@ -393,7 +444,8 @@ int run(const int argc, char** argv) {
     const auto measured = cc::benchmark(contexts.front(), kernel, device, benchmark_nonces,
         benchmark_config.value("zone_size", 1048576ULL),
         benchmark_config.value("batch_zones", 256U), local_size);
-    const trajectory::Request request{*args.bje, args.seed.value_or(0x5452414a454354ULL)};
+    const trajectory::Request request{
+        *args.bje, args.seed.value_or(0x5452414a454354ULL), args.gpu_workers};
     const auto plan = trajectory::make_plan(contexts, request, measured);
     print_trajectory_preview(plan, device);
     if (!args.yes) {
@@ -408,7 +460,8 @@ int run(const int argc, char** argv) {
     }
     const auto campaign = trajectory::create_campaign(plan, trajectory_output, archive, kernel);
     std::cout << "Manifeste Phase 3 créé: " << (campaign / "manifest.json").string() << '\n';
-    return trajectory::resume_campaign(campaign, kernel, device, local_size);
+    return trajectory::resume_campaign(
+        campaign, kernel, device, local_size, args.gpu_workers);
   }
 
   if (args.command == "resume") {

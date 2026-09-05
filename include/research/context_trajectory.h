@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -21,6 +22,39 @@ inline constexpr std::size_t kBootstrapReplicates = 400U;
 struct Request {
   std::uint64_t bje_count{0};
   std::uint64_t seed{0x5452414a454354ULL};
+  std::size_t gpu_workers{1U};
+};
+
+struct GpuBjeWorkItem {
+  std::string block_id;
+  bitcoin::Header header{};
+};
+
+struct GpuBjeScanResult {
+  std::string block_id;
+  header_space::SparseHitResult scan;
+};
+
+struct GpuWorkloadResult {
+  std::vector<GpuBjeScanResult> results;
+  header_space::GpuDeviceInfo device;
+  std::size_t gpu_workers{0U};
+  double setup_seconds{0.0};
+  double scan_wall_seconds{0.0};
+};
+
+using GpuCompletionHandler =
+    std::function<void(std::size_t, GpuBjeScanResult&)>;
+
+struct ThroughputBenchmarkOptions {
+  std::size_t bje_count{0U};
+  std::size_t gpu_workers{1U};
+  std::uint64_t nonce_count{header_space::kNonceSpaceSize};
+};
+
+struct CpuNoncePartition {
+  std::uint64_t nonce_start{0U};
+  std::uint64_t nonce_count{0U};
 };
 
 struct PlannedBje {
@@ -120,10 +154,44 @@ std::string file_sha256(const std::filesystem::path& path);
 bool capture_is_complete(const std::filesystem::path& campaign_directory,
                          const nlohmann::json& block);
 
+namespace detail {
+
+void run_bounded_workers(
+    std::size_t task_count,
+    std::size_t worker_count,
+    const std::function<void(std::size_t, std::size_t)>& task,
+    const std::function<void(std::size_t)>& on_completion = {});
+
+}  // namespace detail
+
+GpuWorkloadResult run_gpu_workload(
+    const std::vector<GpuBjeWorkItem>& items,
+    const std::filesystem::path& kernel,
+    const std::string& device,
+    std::size_t local_size,
+    std::size_t gpu_workers,
+    std::uint64_t nonce_start,
+    std::uint64_t nonce_count,
+    unsigned threshold_bits,
+    std::size_t initial_capacity,
+    const GpuCompletionHandler& on_completion = {});
+nlohmann::json trajectory_throughput_benchmark(
+    const std::filesystem::path& campaign_directory,
+    const std::filesystem::path& kernel,
+    const std::string& device,
+    std::size_t local_size,
+    ThroughputBenchmarkOptions options);
+std::vector<CpuNoncePartition> partition_cpu_nonce_range(
+    std::uint64_t nonce_count,
+    std::size_t threads);
+nlohmann::json trajectory_cpu_benchmark(std::size_t threads,
+                                        std::uint64_t nonce_count);
+
 int resume_campaign(const std::filesystem::path& campaign_directory,
                     const std::filesystem::path& kernel,
                     const std::string& device,
-                    std::size_t local_size);
+                    std::size_t local_size,
+                    std::size_t gpu_workers = 1U);
 nlohmann::json analyze_campaign(const std::filesystem::path& campaign_directory);
 std::filesystem::path export_bje(const std::filesystem::path& campaign_directory,
                                  const std::string& block_id);

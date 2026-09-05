@@ -159,7 +159,8 @@ void print_help() {
       "  resume --campaign <dossier>    Reprendre sans rescanner les blocs complets\n"
       "  analyze --campaign <dossier> [--finalize-holdout]\n"
       "  phase2 --campaign <dossier> [--check] [--yes]\n"
-      "         Phase 2A discovery-only; refuse validation/holdout/finalisation\n"
+      "         Phase 2A discovery-only; ranking primaire intra-contexte;\n"
+      "         refuse validation/holdout/finalisation\n"
       "  smoke [--smoke-nonces N]       Test court, jamais une vérité terrain\n\n"
       "Dimensionnement (au choix):\n"
       "  --total-blocks N\n"
@@ -297,15 +298,17 @@ int run(const int argc, char** argv) {
           "Phase 2A refuses --partition " + *args.partition +
           "; only discovery is admissible");
     }
-    const auto campaign = args.campaign.value_or(latest_complete_campaign(output));
+    phase2::Options options;
+    const auto campaign = args.campaign.value_or(
+        output / options.expected_campaign_id);
     std::cout << "\nCAMPAGNE: " << campaign.string() << '\n'
               << "MODE: PHASE 2A DISCOVERY ONLY\n"
+              << "OBJECTIF PRIMAIRE: ranking intra-contexte des extranonce2\n"
               << "Discovery utilise: oui\n"
               << "Validation utilisee: NON\n"
               << "Holdout utilise: NON\n"
               << "Aucun scan GPU: oui\n"
               << "Donnees sources modifiees: NON\n";
-    phase2::Options options;
     options.check_only = args.phase2_check;
     if (args.seed) options.seed = *args.seed;
     if (args.folds) options.outer_folds = *args.folds;

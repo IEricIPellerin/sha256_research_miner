@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -38,7 +39,11 @@ nlohmann::json source_feature(const std::string& id,
                               const std::string& context,
                               const std::string& prevhash,
                               const std::uint64_t extranonce) {
-  const auto header = srm::crypto::from_hex(kGenesisHeader);
+  auto header = srm::crypto::from_hex(kGenesisHeader);
+  header[68] = static_cast<std::uint8_t>(extranonce >> 24U);
+  header[69] = static_cast<std::uint8_t>(extranonce >> 16U);
+  header[70] = static_cast<std::uint8_t>(extranonce >> 8U);
+  header[71] = static_cast<std::uint8_t>(extranonce);
   const std::span<const std::uint8_t> prefix(header.data(), 76U);
   const auto compact = whitebox::build_prescan_compression1(prefix);
   nlohmann::json words = nlohmann::json::array();
@@ -76,7 +81,8 @@ nlohmann::json label(const std::string& id, const std::string& partition,
 }
 
 std::filesystem::path fixture(const std::string& suffix,
-                              const double holdout_quality = 999999.0) {
+                              const double holdout_quality = 999999.0,
+                              const bool swap_first_context_targets = false) {
   const auto directory = std::filesystem::temp_directory_path() /
       ("srm_phase2_" + suffix + "_" + std::to_string(
           std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -86,17 +92,20 @@ std::filesystem::path fixture(const std::string& suffix,
     output << R"({"schema_version":1,"campaign_id":"phase2-test","created_at_utc":"2026-09-04T00:00:00.000Z"})";
   }
   struct Item { std::string id, partition, context, prevhash; double quality; };
-  const std::vector<Item> items{
+  std::vector<Item> items{
       {"d00", "discovery", "c0", "p0", 30.0},
       {"d01", "discovery", "c0", "p0", 31.0},
-      {"d10", "discovery", "c1", "p1", 32.0},
-      {"d11", "discovery", "c1", "p1", 34.0},
-      {"d20", "discovery", "c2", "p2", 33.0},
-      {"d21", "discovery", "c2", "p2", 38.0},
-      {"d30", "discovery", "c3", "p3", 35.0},
-      {"d31", "discovery", "c3", "p3", 36.0},
+      {"d10", "discovery", "c1", "p0", 32.0},
+      {"d11", "discovery", "c1", "p0", 34.0},
+      {"d20", "discovery", "c2", "p1", 33.0},
+      {"d21", "discovery", "c2", "p1", 38.0},
+      {"d30", "discovery", "c3", "p1", 35.0},
+      {"d31", "discovery", "c3", "p1", 36.0},
       {"validation-secret", "validation", "cv", "pv", 1.0e100},
       {"holdout-secret", "holdout", "ch", "ph", holdout_quality}};
+  if (swap_first_context_targets) {
+    std::swap(items[0].quality, items[1].quality);
+  }
   {
     std::ofstream output(directory / "features.jsonl", std::ios::binary);
     std::uint64_t ex = 1U;
@@ -134,6 +143,23 @@ std::filesystem::path fixture(const std::string& suffix,
 std::string read_all(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+std::map<std::string, std::pair<std::string, std::string>> rank_prediction_cells(
+    const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  std::string line;
+  std::getline(input, line);
+  std::map<std::string, std::pair<std::string, std::string>> result;
+  while (std::getline(input, line)) {
+    std::istringstream row(line);
+    std::vector<std::string> cells;
+    std::string cell;
+    while (std::getline(row, cell, ',')) cells.push_back(cell);
+    REQUIRE(cells.size() >= 6U);
+    result[cells[0]] = {cells[4], cells[5]};
+  }
+  return result;
 }
 
 }  // namespace
@@ -216,9 +242,37 @@ TEST_CASE("Phase 2 features and contextual references cannot depend on POST_SCAN
   REQUIRE_EQ(phase2::deterministic_context_reference(candidates), reference);
 }
 
+TEST_CASE("Phase 2 operational top-k selects independently inside every context") {
+  const std::vector<std::string> contexts{
+      "A", "A", "A", "A", "B", "B", "B", "B"};
+  const std::vector<double> different_scales{
+      1000.0, 900.0, 800.0, 700.0, 1.0, 0.9, 0.8, 0.7};
+  const auto quarter = phase2::intra_context_topk_selection(
+      contexts, different_scales, 0.25, true);
+  REQUIRE_EQ(quarter.size(), 2U);
+  REQUIRE(std::find(quarter.begin(), quarter.end(), 0U) != quarter.end());
+  REQUIRE(std::find(quarter.begin(), quarter.end(), 4U) != quarter.end());
+
+  std::map<std::string, std::size_t> owners;
+  for (const auto index : quarter) ++owners[contexts[index]];
+  REQUIRE_EQ(owners["A"], 1U);
+  REQUIRE_EQ(owners["B"], 1U);
+  REQUIRE(std::find(quarter.begin(), quarter.end(), 1U) == quarter.end());
+
+  const std::vector<std::string> unequal_contexts{"A", "A", "A", "A", "B", "B"};
+  const std::vector<double> scores{6, 5, 4, 3, 2, 1};
+  const auto half = phase2::intra_context_topk_selection(
+      unequal_contexts, scores, 0.5, true);
+  std::map<std::string, std::size_t> half_counts;
+  for (const auto index : half) ++half_counts[unequal_contexts[index]];
+  REQUIRE_EQ(half_counts["A"], 2U);
+  REQUIRE_EQ(half_counts["B"], 1U);
+}
+
 TEST_CASE("Phase 2 full fixture excludes validation and holdout and records train-only CV provenance") {
   const auto directory = fixture("guards");
   phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
   options.outer_folds = 2U;
   options.bootstrap_replicates = 2U;
   options.permutation_replicates = 2U;
@@ -231,7 +285,21 @@ TEST_CASE("Phase 2 full fixture excludes validation and holdout and records trai
   const auto derived = read_all(output / "derived_features_discovery.jsonl");
   REQUIRE(derived.find("validation-secret") == std::string::npos);
   REQUIRE(derived.find("holdout-secret") == std::string::npos);
-  const auto cv = nlohmann::json::parse(read_all(output / "grouped_cv_summary.json"));
+  REQUIRE(std::filesystem::exists(output / "intra_context_feature_summary.csv"));
+  REQUIRE(std::filesystem::exists(output / "topk_lift_intra_context.csv"));
+  REQUIRE(std::filesystem::exists(output / "grouped_cv_rank_predictions.csv"));
+  const auto rank_predictions = read_all(output / "grouped_cv_rank_predictions.csv");
+  REQUIRE(rank_predictions.find("validation-secret") == std::string::npos);
+  REQUIRE(rank_predictions.find("holdout-secret") == std::string::npos);
+  const auto primary_topk = read_all(output / "topk_lift_intra_context.csv");
+  REQUIRE(primary_topk.find("baseline.random_deterministic") != std::string::npos);
+  const auto cv = nlohmann::json::parse(
+      read_all(output / "grouped_cv_rank_summary.json"));
+  REQUIRE_EQ(cv.at("role").get<std::string>(), "PRIMARY_OPERATIONAL");
+  REQUIRE_EQ(cv.at("target").get<std::string>(), "context_quality_score");
+  REQUIRE_EQ(cv.at("feature_selection_statistic").get<std::string>(),
+             "absolute mean prevhash of context-level Spearman, train-only");
+  REQUIRE(!cv.at("sanity_baseline_admissible").get<bool>());
   for (const auto& fold : cv.at("folds")) {
     const auto train = fold.at("train_prevhashes").get<std::set<std::string>>();
     const auto test = fold.at("test_prevhashes").get<std::set<std::string>>();
@@ -243,8 +311,23 @@ TEST_CASE("Phase 2 full fixture excludes validation and holdout and records trai
                "outer_train_only");
     REQUIRE_EQ(fold.at("feature_selection").at("scope").get<std::string>(),
                "outer_train_only");
+    REQUIRE_EQ(fold.at("feature_selection").at("statistic").get<std::string>(),
+               "absolute mean prevhash of context-level Spearman");
     REQUIRE_EQ(fold.at("normalization").at("fitted_row_count").get<std::size_t>(),
                fold.at("train_rows").get<std::size_t>());
+    REQUIRE_EQ(fold.at("test_target_rows_used_for_training").get<std::size_t>(), 0U);
+    for (const auto& name : fold.at("selected_features")) {
+      REQUIRE(name.get<std::string>().rfind("baseline.", 0U) != 0U);
+    }
+  }
+  const auto permutation = nlohmann::json::parse(
+      read_all(output / "permutation_summary.json"));
+  REQUIRE_EQ(permutation.at("multiple_selection_adjustment").get<std::string>(),
+             "none; post-selection values are exploratory and unadjusted");
+  for (const auto& result : permutation.at("results")) {
+    REQUIRE(result.at("feature").get<std::string>().rfind("baseline.", 0U) != 0U);
+    REQUIRE_EQ(result.at("status").get<std::string>(),
+               "POST_SELECTION_EXPLORATORY_UNADJUSTED_NOT_EVIDENCE");
   }
   std::filesystem::remove_all(directory);
 }
@@ -253,6 +336,7 @@ TEST_CASE("Phase 2 scientific artifacts are deterministic for an identical seed"
   const auto first = fixture("determinism_a");
   const auto second = fixture("determinism_b");
   phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
   options.outer_folds = 2U;
   options.bootstrap_replicates = 2U;
   options.permutation_replicates = 2U;
@@ -267,9 +351,35 @@ TEST_CASE("Phase 2 scientific artifacts are deterministic for an identical seed"
   std::filesystem::remove_all(second);
 }
 
+TEST_CASE("Phase 2 rank model never trains on the target of its outer test prevhash") {
+  const auto original = fixture("test_target_original");
+  const auto perturbed = fixture("test_target_perturbed", 999999.0, true);
+  phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
+  options.outer_folds = 2U;
+  options.bootstrap_replicates = 1U;
+  options.permutation_replicates = 1U;
+  options.selected_feature_count = 4U;
+  (void)phase2::run(original, options);
+  (void)phase2::run(perturbed, options);
+  const auto original_predictions = rank_prediction_cells(
+      original / "phase2_discovery_v1" / "grouped_cv_rank_predictions.csv");
+  const auto perturbed_predictions = rank_prediction_cells(
+      perturbed / "phase2_discovery_v1" / "grouped_cv_rank_predictions.csv");
+  for (const auto& id : {"d00", "d01"}) {
+    REQUIRE(original_predictions.at(id).first !=
+            perturbed_predictions.at(id).first);
+    REQUIRE_EQ(original_predictions.at(id).second,
+               perturbed_predictions.at(id).second);
+  }
+  std::filesystem::remove_all(original);
+  std::filesystem::remove_all(perturbed);
+}
+
 TEST_CASE("Phase 2 dry-run writes no artifacts") {
   const auto directory = fixture("dry_run");
   phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
   options.outer_folds = 2U;
   options.check_only = true;
   const auto audit = phase2::run(directory, options);

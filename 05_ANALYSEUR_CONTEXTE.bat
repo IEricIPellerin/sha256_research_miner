@@ -30,7 +30,7 @@ echo [5] Analyser les resultats existants
 echo [6] Taille personnalisee
 echo [7] Smoke test tres court
 echo [8] Resume du corpus Stratum
-echo [9] PHASE 2 - enrichissement white-box (DISCOVERY seulement)
+echo [9] PHASE 2 - ranking intra-contexte (DISCOVERY seulement)
 echo [0] Quitter
 echo.
 set /p "CHOICE=Choix: "
@@ -51,8 +51,9 @@ goto menu
 
 :phase2
 echo.
-echo CAMPAGNE: derniere campagne complete (CLI --campaign pour la choisir)
+echo CAMPAGNE: ctx_20260904_165537_41323536 (figee)
 echo MODE: PHASE 2A DISCOVERY ONLY
+echo OBJECTIF PRIMAIRE: ranking des extranonce2 dans chaque contexte
 echo Discovery utilise: oui
 echo Validation utilisee: NON
 echo Holdout utilise: NON
@@ -60,8 +61,8 @@ echo Aucun scan GPU: oui
 echo Donnees sources modifiees: NON
 echo.
 set /p "CONFIRM2=Confirmer Phase 2A [O/N]: "
-if /i "%CONFIRM2%"=="O" "%ANALYZER%" phase2 --yes
-if /i "%CONFIRM2%"=="OUI" "%ANALYZER%" phase2 --yes
+if /i "%CONFIRM2%"=="O" "%ANALYZER%" phase2 --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
+if /i "%CONFIRM2%"=="OUI" "%ANALYZER%" phase2 --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
 goto done
 
 :done

@@ -64,14 +64,18 @@ struct Row {
   std::string prevhash;
   std::string extranonce2;
   std::vector<double> x;
+  std::vector<double> context_feature_ranks;
   Snapshot snapshot;
   double quality{};
   double difficulty{};
   double log_difficulty{};
   std::array<double, 7> tails{};
   double rank_quality{};
+  double context_quality_score{};
   double cv_prediction{std::numeric_limits<double>::quiet_NaN()};
   double cv_prediction_rank{};
+  double rank_cv_prediction{std::numeric_limits<double>::quiet_NaN()};
+  double rank_cv_prediction_rank{};
   std::size_t outer_fold{};
 };
 
@@ -597,6 +601,36 @@ std::vector<std::size_t> grouped_fold_assignment(
   return result;
 }
 
+std::vector<std::size_t> intra_context_topk_selection(
+    const std::vector<std::string>& contexts,
+    const std::vector<double>& scores,
+    const double fraction,
+    const bool descending) {
+  if (contexts.size() != scores.size()) {
+    throw std::invalid_argument("context and score vector lengths differ");
+  }
+  if (!(fraction > 0.0 && fraction <= 1.0)) {
+    throw std::invalid_argument("top-k fraction must be in (0,1]");
+  }
+  std::map<std::string, std::vector<std::size_t>> grouped;
+  for (std::size_t i = 0; i < contexts.size(); ++i) grouped[contexts[i]].push_back(i);
+  std::vector<std::size_t> selected;
+  for (auto& [unused, indices] : grouped) {
+    std::stable_sort(indices.begin(), indices.end(), [&](const auto left, const auto right) {
+      if (scores[left] != scores[right]) {
+        return descending ? scores[left] > scores[right]
+                          : scores[left] < scores[right];
+      }
+      return left < right;
+    });
+    const auto count = std::min(indices.size(), std::max<std::size_t>(1U,
+        static_cast<std::size_t>(std::ceil(indices.size() * fraction))));
+    selected.insert(selected.end(), indices.begin(), indices.begin() +
+                    static_cast<std::ptrdiff_t>(count));
+  }
+  return selected;
+}
+
 namespace {
 
 std::vector<double> values_for_schema(const FeatureMap& values,
@@ -843,6 +877,13 @@ LoadedData load_discovery(const std::filesystem::path& directory,
         }
         begin = end;
       }
+      for (const auto index : indices) {
+        data.rows[index].context_quality_score = indices.size() > 1U
+            ? (static_cast<double>(indices.size()) -
+               data.rows[index].rank_quality) /
+                  static_cast<double>(indices.size() - 1U)
+            : 1.0;
+      }
     }
   }
   return data;
@@ -865,9 +906,28 @@ std::vector<double> ranks(const std::vector<double>& values) {
   return result;
 }
 
+void prepare_context_feature_ranks(std::vector<Row>& rows) {
+  std::map<std::string, std::vector<std::size_t>> contexts;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].context_feature_ranks.resize(rows[i].x.size());
+    contexts[rows[i].context].push_back(i);
+  }
+  for (const auto& [unused, indices] : contexts) {
+    for (std::size_t feature = 0; feature < rows.front().x.size(); ++feature) {
+      std::vector<double> values;
+      values.reserve(indices.size());
+      for (const auto index : indices) values.push_back(rows[index].x[feature]);
+      const auto feature_ranks = ranks(values);
+      for (std::size_t i = 0; i < indices.size(); ++i) {
+        rows[indices[i]].context_feature_ranks[feature] = feature_ranks[i];
+      }
+    }
+  }
+}
+
 double pearson(const std::vector<double>& x, const std::vector<double>& y) {
   require(x.size() == y.size(), "correlation vector length mismatch");
-  if (x.size() < 3U) return 0.0;
+  if (x.size() < 2U) return 0.0;
   const auto mx = std::accumulate(x.begin(), x.end(), 0.0) / x.size();
   const auto my = std::accumulate(y.begin(), y.end(), 0.0) / y.size();
   double xx = 0.0, yy = 0.0, xy = 0.0;
@@ -989,13 +1049,79 @@ std::string csv_number(const double value) {
   return output.str();
 }
 
+enum class ModelTarget { AbsoluteQuality, ContextQualityScore };
+
+double model_response(const Row& row, const ModelTarget target_kind) {
+  return target_kind == ModelTarget::ContextQualityScore
+      ? row.context_quality_score : row.quality;
+}
+
+std::vector<double> model_responses(
+    const std::vector<Row>& rows, const ModelTarget target_kind,
+    const std::vector<std::size_t>* indices = nullptr) {
+  std::vector<double> result;
+  if (indices == nullptr) {
+    result.reserve(rows.size());
+    for (const auto& row : rows) result.push_back(model_response(row, target_kind));
+  } else {
+    result.reserve(indices->size());
+    for (const auto index : *indices) result.push_back(model_response(rows[index], target_kind));
+  }
+  return result;
+}
+
 std::vector<std::size_t> select_features(
     const std::vector<Row>& rows, const std::vector<std::size_t>& train,
-    const std::size_t maximum) {
-  const auto y = target(rows, 0U, &train);
+    const std::vector<SchemaEntry>& schema, const std::size_t maximum,
+    const ModelTarget target_kind, const bool exclude_sanity_baselines) {
+  const auto y = model_responses(rows, target_kind, &train);
+  struct TrainingContext {
+    std::size_t prevhash_index{};
+    std::vector<std::size_t> rows;
+  };
+  std::vector<TrainingContext> training_contexts;
+  std::size_t training_prevhash_count = 0U;
+  if (target_kind == ModelTarget::ContextQualityScore) {
+    std::map<std::string, std::vector<std::size_t>> context_rows;
+    std::map<std::string, std::size_t> prevhash_indices;
+    for (const auto index : train) context_rows[rows[index].context].push_back(index);
+    for (const auto& [unused, indices] : context_rows) {
+      const auto [position, inserted] = prevhash_indices.emplace(
+          rows[indices.front()].prevhash, prevhash_indices.size());
+      (void)inserted;
+      training_contexts.push_back({position->second, indices});
+    }
+    training_prevhash_count = prevhash_indices.size();
+  }
   std::vector<std::pair<double, std::size_t>> scored;
   for (std::size_t feature = 0; feature < rows.front().x.size(); ++feature) {
-    const auto correlation = pearson(column(rows, feature, &train), y);
+    if (exclude_sanity_baselines && schema[feature].family == "SANITY_BASELINE") continue;
+    double correlation = 0.0;
+    if (target_kind == ModelTarget::ContextQualityScore) {
+      std::vector<double> prevhash_sums(training_prevhash_count, 0.0);
+      std::vector<std::size_t> prevhash_context_counts(training_prevhash_count, 0U);
+      for (const auto& context : training_contexts) {
+        std::vector<double> feature_ranks, response;
+        feature_ranks.reserve(context.rows.size());
+        response.reserve(context.rows.size());
+        for (const auto index : context.rows) {
+          require(rows[index].context_feature_ranks.size() == rows[index].x.size(),
+                  "PRE_SCAN context feature ranks were not prepared");
+          feature_ranks.push_back(rows[index].context_feature_ranks[feature]);
+          response.push_back(rows[index].context_quality_score);
+        }
+        prevhash_sums[context.prevhash_index] += pearson(feature_ranks, response);
+        ++prevhash_context_counts[context.prevhash_index];
+      }
+      for (std::size_t prevhash = 0; prevhash < training_prevhash_count; ++prevhash) {
+        require(prevhash_context_counts[prevhash] > 0U,
+                "empty prevhash in primary feature selection");
+        correlation += prevhash_sums[prevhash] / prevhash_context_counts[prevhash];
+      }
+      correlation /= training_prevhash_count;
+    } else {
+      correlation = pearson(column(rows, feature, &train), y);
+    }
     if (std::isfinite(correlation) && std::abs(correlation) > 0.0) {
       scored.emplace_back(std::abs(correlation), feature);
     }
@@ -1051,13 +1177,14 @@ std::vector<double> solve_linear(std::vector<std::vector<double>> matrix,
 RidgeModel fit_ridge(const std::vector<Row>& rows,
                      const std::vector<std::size_t>& train,
                      const std::vector<std::size_t>& features,
-                     const double lambda) {
+                     const double lambda,
+                     const ModelTarget target_kind) {
   RidgeModel model;
   model.features = features;
   model.means.resize(features.size());
   model.scales.resize(features.size());
   model.fitted_row_count = train.size();
-  for (const auto index : train) model.y_mean += rows[index].quality;
+  for (const auto index : train) model.y_mean += model_response(rows[index], target_kind);
   model.y_mean /= train.size();
   for (std::size_t j = 0; j < features.size(); ++j) {
     for (const auto index : train) model.means[j] += rows[index].x[features[j]];
@@ -1077,7 +1204,7 @@ RidgeModel fit_ridge(const std::vector<Row>& rows,
   for (const auto index : train) {
     for (std::size_t j = 0; j < features.size(); ++j) {
       z[j] = (rows[index].x[features[j]] - model.means[j]) / model.scales[j];
-      rhs[j] += z[j] * (rows[index].quality - model.y_mean);
+      rhs[j] += z[j] * (model_response(rows[index], target_kind) - model.y_mean);
     }
     for (std::size_t j = 0; j < features.size(); ++j) {
       for (std::size_t k = 0; k < features.size(); ++k) gram[j][k] += z[j] * z[k];
@@ -1110,11 +1237,16 @@ double rmse(const std::vector<double>& actual, const std::vector<double>& predic
 struct CvArtifacts {
   nlohmann::json summary;
   std::string predictions_csv;
+  std::vector<double> predictions;
+  std::vector<double> predicted_context_ranks;
 };
 
 CvArtifacts grouped_nested_cv(std::vector<Row>& rows,
                               const std::vector<SchemaEntry>& schema,
-                              const Options& options) {
+                              const Options& options,
+                              const ModelTarget target_kind) {
+  const auto primary = target_kind == ModelTarget::ContextQualityScore;
+  const auto target_name = primary ? "context_quality_score" : "quality_bits";
   std::vector<std::string> groups;
   groups.reserve(rows.size());
   for (const auto& row : rows) groups.push_back(row.prevhash);
@@ -1163,17 +1295,20 @@ CvArtifacts grouped_nested_cv(std::vector<Row>& rows,
         for (std::size_t pos = 0; pos < train.size(); ++pos) {
           (inner_owner[pos] == inner_fold ? split.test : split.train).push_back(train[pos]);
         }
-        split.selected = select_features(rows, split.train,
-                                         options.selected_feature_count);
+        split.selected = select_features(
+            rows, split.train, schema, options.selected_feature_count,
+            target_kind, primary);
       }
       auto best_error = std::numeric_limits<double>::infinity();
       for (const auto lambda : kLambdas) {
         double total_squared = 0.0;
         std::size_t count = 0U;
         for (const auto& split : inner_splits) {
-          const auto model = fit_ridge(rows, split.train, split.selected, lambda);
+          const auto model = fit_ridge(
+              rows, split.train, split.selected, lambda, target_kind);
           for (const auto index : split.test) {
-            const auto error = rows[index].quality - predict(model, rows[index]);
+            const auto error = model_response(rows[index], target_kind) -
+                               predict(model, rows[index]);
             total_squared += error * error;
             ++count;
           }
@@ -1187,10 +1322,12 @@ CvArtifacts grouped_nested_cv(std::vector<Row>& rows,
       }
     }
 
-    const auto selected = select_features(rows, train, options.selected_feature_count);
-    const auto model = fit_ridge(rows, train, selected, selected_lambda);
+    const auto selected = select_features(
+        rows, train, schema, options.selected_feature_count, target_kind, primary);
+    const auto model = fit_ridge(rows, train, selected, selected_lambda, target_kind);
     for (const auto index : test) {
-      rows[index].cv_prediction = predict(model, rows[index]);
+      if (primary) rows[index].rank_cv_prediction = predict(model, rows[index]);
+      else rows[index].cv_prediction = predict(model, rows[index]);
       rows[index].outer_fold = fold;
     }
     nlohmann::json selected_names = nlohmann::json::array();
@@ -1200,70 +1337,135 @@ CvArtifacts grouped_nested_cv(std::vector<Row>& rows,
         {"train_prevhashes", train_groups}, {"test_prevhashes", test_groups},
         {"prevhash_overlap", overlap}, {"selected_lambda", selected_lambda},
         {"inner_cv", inner_scores}, {"selected_features", selected_names},
+        {"training_target", target_name},
+        {"test_target_rows_used_for_training", 0},
+        {"excluded_feature_families",
+         primary ? nlohmann::json::array({"SANITY_BASELINE"})
+                 : nlohmann::json::array()},
         {"normalization", {{"scope", "outer_train_only"},
                            {"fitted_row_count", model.fitted_row_count}}},
         {"feature_selection", {{"scope", "outer_train_only"},
-                               {"fitted_row_count", train.size()}}}});
+                               {"fitted_row_count", train.size()},
+                               {"statistic", primary
+                                    ? "absolute mean prevhash of context-level Spearman"
+                                    : "absolute pooled Pearson"}}}});
   }
-  for (const auto& row : rows) require(std::isfinite(row.cv_prediction), "missing outer CV prediction");
+  for (const auto& row : rows) {
+    require(std::isfinite(primary ? row.rank_cv_prediction : row.cv_prediction),
+            "missing outer CV prediction");
+  }
 
   std::map<std::string, std::vector<std::size_t>> contexts;
   for (std::size_t i = 0; i < rows.size(); ++i) contexts[rows[i].context].push_back(i);
   for (const auto& [unused, indices] : contexts) {
     auto ordered = indices;
     std::stable_sort(ordered.begin(), ordered.end(), [&](const auto left, const auto right) {
-      if (rows[left].cv_prediction != rows[right].cv_prediction)
-        return rows[left].cv_prediction > rows[right].cv_prediction;
+      const auto left_score = primary ? rows[left].rank_cv_prediction : rows[left].cv_prediction;
+      const auto right_score = primary ? rows[right].rank_cv_prediction : rows[right].cv_prediction;
+      if (left_score != right_score) return left_score > right_score;
       return rows[left].block_id < rows[right].block_id;
     });
     for (std::size_t begin = 0; begin < ordered.size();) {
       std::size_t end = begin + 1U;
-      while (end < ordered.size() &&
-             rows[ordered[end]].cv_prediction == rows[ordered[begin]].cv_prediction) ++end;
+      const auto begin_score = primary ? rows[ordered[begin]].rank_cv_prediction
+                                       : rows[ordered[begin]].cv_prediction;
+      while (end < ordered.size()) {
+        const auto end_score = primary ? rows[ordered[end]].rank_cv_prediction
+                                       : rows[ordered[end]].cv_prediction;
+        if (end_score != begin_score) break;
+        ++end;
+      }
       const auto average_rank =
           (static_cast<double>(begin + 1U) + static_cast<double>(end)) / 2.0;
       for (std::size_t i = begin; i < end; ++i) {
-        rows[ordered[i]].cv_prediction_rank = average_rank;
+        if (primary) rows[ordered[i]].rank_cv_prediction_rank = average_rank;
+        else rows[ordered[i]].cv_prediction_rank = average_rank;
       }
       begin = end;
     }
   }
   std::vector<double> actual, predicted, actual_rank, predicted_rank;
   for (const auto& row : rows) {
-    actual.push_back(row.quality);
-    predicted.push_back(row.cv_prediction);
+    actual.push_back(model_response(row, target_kind));
+    predicted.push_back(primary ? row.rank_cv_prediction : row.cv_prediction);
     actual_rank.push_back(row.rank_quality);
-    predicted_rank.push_back(row.cv_prediction_rank);
+    predicted_rank.push_back(primary ? row.rank_cv_prediction_rank
+                                     : row.cv_prediction_rank);
   }
+
+  std::map<std::string, std::vector<double>> correlations_by_prevhash;
+  std::vector<double> context_correlations;
+  for (const auto& [unused, indices] : contexts) {
+    std::vector<double> context_actual, context_predicted;
+    for (const auto index : indices) {
+      context_actual.push_back(rows[index].context_quality_score);
+      context_predicted.push_back(predicted[index]);
+    }
+    const auto correlation = spearman(context_actual, context_predicted);
+    context_correlations.push_back(correlation);
+    correlations_by_prevhash[rows[indices.front()].prevhash].push_back(correlation);
+  }
+  std::vector<double> prevhash_correlations;
+  for (const auto& [unused, values] : correlations_by_prevhash) {
+    prevhash_correlations.push_back(
+        std::accumulate(values.begin(), values.end(), 0.0) / values.size());
+  }
+  const auto summarize = [](std::vector<double> values) {
+    std::sort(values.begin(), values.end());
+    const auto mean = std::accumulate(values.begin(), values.end(), 0.0) / values.size();
+    const auto median = values.size() % 2U
+        ? values[values.size() / 2U]
+        : (values[values.size() / 2U - 1U] + values[values.size() / 2U]) / 2.0;
+    return nlohmann::json{{"count", values.size()}, {"mean", mean}, {"median", median}};
+  };
   nlohmann::json summary = {
       {"schema_version", kSchemaVersion}, {"phase", "2A_DISCOVERY_ONLY"},
-      {"model", "standardized_ridge"}, {"target", "quality_bits"},
+      {"model", "standardized_ridge"}, {"target", target_name},
+      {"role", primary ? "PRIMARY_OPERATIONAL" : "SECONDARY_DESCRIPTIVE"},
       {"outer_fold_count", folds}, {"inner_fold_max", 4U},
       {"group_unit", "prevhash"}, {"lambda_grid", kLambdas},
       {"feature_selection_max", options.selected_feature_count},
       {"normalization_scope", "train_only"},
       {"feature_selection_scope", "train_only"},
+      {"feature_selection_statistic",
+       primary ? "absolute mean prevhash of context-level Spearman, train-only"
+               : "absolute pooled Pearson, train-only"},
       {"inner_cv_normalization_scope", "inner_train_only"},
       {"inner_cv_feature_selection_scope", "inner_train_only"},
       {"inner_cv_lambda_selection_scope", "outer_train_only"},
+      {"sanity_baseline_admissible", !primary},
+      {"excluded_feature_families",
+       primary ? nlohmann::json::array({"SANITY_BASELINE"})
+               : nlohmann::json::array()},
       {"folds", fold_audits},
       {"metrics", {{"rmse", rmse(actual, predicted)},
                    {"pearson", pearson(actual, predicted)},
                    {"spearman", spearman(actual, predicted)},
-                   {"intra_context_rank_spearman",
-                    spearman(actual_rank, predicted_rank)}}},
+                   {"pooled_rank_spearman_descriptive",
+                    spearman(actual_rank, predicted_rank)},
+                   {"per_context_spearman", summarize(context_correlations)},
+                   {"per_prevhash_context_spearman", summarize(prevhash_correlations)}}},
       {"validation_rows_used", 0}, {"holdout_rows_used", 0},
       {"status", "exploratory_cross_validated_on_discovery"}};
   std::ostringstream csv;
-  csv << "block_id,prevhash,work_fingerprint,outer_fold,actual_quality_bits,"
-         "predicted_quality_bits,actual_rank_quality_bits,predicted_rank_quality_bits\n";
+  if (primary) {
+    csv << "block_id,prevhash,work_fingerprint,outer_fold,actual_context_quality_score,"
+           "predicted_context_quality_score,actual_rank_quality_bits,"
+           "predicted_rank_quality_bits_within_context\n";
+  } else {
+    csv << "block_id,prevhash,work_fingerprint,outer_fold,actual_quality_bits,"
+           "predicted_quality_bits,actual_rank_quality_bits,predicted_rank_quality_bits\n";
+  }
   for (const auto& row : rows) {
     csv << row.block_id << ',' << row.prevhash << ',' << row.context << ','
-        << row.outer_fold << ',' << csv_number(row.quality) << ','
-        << csv_number(row.cv_prediction) << ',' << csv_number(row.rank_quality)
-        << ',' << csv_number(row.cv_prediction_rank) << '\n';
+        << row.outer_fold << ',' << csv_number(model_response(row, target_kind)) << ','
+        << csv_number(primary ? row.rank_cv_prediction : row.cv_prediction) << ','
+        << csv_number(row.rank_quality) << ','
+        << csv_number(primary ? row.rank_cv_prediction_rank
+                              : row.cv_prediction_rank) << '\n';
   }
-  return {std::move(summary), csv.str()};
+  return {std::move(summary), csv.str(), std::move(predicted),
+          std::move(predicted_rank)};
 }
 
 struct UnivariateArtifacts {
@@ -1387,6 +1589,104 @@ GroupArtifacts group_analysis(const std::vector<Row>& rows,
   return {context_csv.str(), prevhash_csv.str()};
 }
 
+std::vector<double> primary_prevhash_feature_statistics(
+    const std::vector<Row>& rows, const std::size_t feature,
+    const std::vector<double>* response_override = nullptr,
+    std::vector<double>* context_statistics = nullptr) {
+  std::map<std::string, std::vector<std::size_t>> contexts;
+  for (std::size_t i = 0; i < rows.size(); ++i) contexts[rows[i].context].push_back(i);
+  std::map<std::string, std::vector<double>> by_prevhash;
+  for (const auto& [unused, indices] : contexts) {
+    std::vector<double> x, y;
+    x.reserve(indices.size());
+    y.reserve(indices.size());
+    for (const auto index : indices) {
+      x.push_back(rows[index].x[feature]);
+      y.push_back(response_override == nullptr
+                      ? rows[index].context_quality_score
+                      : response_override->at(index));
+    }
+    const auto correlation = spearman(x, y);
+    if (context_statistics != nullptr) context_statistics->push_back(correlation);
+    by_prevhash[rows[indices.front()].prevhash].push_back(correlation);
+  }
+  std::vector<double> result;
+  result.reserve(by_prevhash.size());
+  for (const auto& [unused, values] : by_prevhash) {
+    result.push_back(std::accumulate(values.begin(), values.end(), 0.0) /
+                     values.size());
+  }
+  return result;
+}
+
+struct PrimaryFeatureArtifacts {
+  std::string csv;
+  std::vector<double> mean_prevhash_spearman;
+};
+
+double percentile(std::vector<double> values, double fraction);
+
+PrimaryFeatureArtifacts primary_feature_analysis(
+    const std::vector<Row>& rows, const std::vector<SchemaEntry>& schema,
+    const Options& options) {
+  std::ostringstream csv;
+  csv << "feature,category,family,context_count,prevhash_count,"
+         "context_spearman_mean,context_spearman_median,"
+         "prevhash_spearman_mean,prevhash_spearman_median,"
+         "prevhash_coherent_sign_fraction,prevhash_bootstrap_ci_low,"
+         "prevhash_bootstrap_ci_high,status\n";
+  std::vector<double> primary_scores(schema.size());
+  for (std::size_t feature = 0; feature < schema.size(); ++feature) {
+    std::vector<double> context_values;
+    auto prevhash_values = primary_prevhash_feature_statistics(
+        rows, feature, nullptr, &context_values);
+    auto sorted_context = context_values;
+    auto sorted_prevhash = prevhash_values;
+    std::sort(sorted_context.begin(), sorted_context.end());
+    std::sort(sorted_prevhash.begin(), sorted_prevhash.end());
+    const auto mean_of = [](const std::vector<double>& values) {
+      return std::accumulate(values.begin(), values.end(), 0.0) / values.size();
+    };
+    const auto median_of = [](const std::vector<double>& values) {
+      return values.size() % 2U
+          ? values[values.size() / 2U]
+          : (values[values.size() / 2U - 1U] + values[values.size() / 2U]) / 2.0;
+    };
+    const auto context_mean = mean_of(context_values);
+    const auto context_median = median_of(sorted_context);
+    const auto prevhash_mean = mean_of(prevhash_values);
+    const auto prevhash_median = median_of(sorted_prevhash);
+    primary_scores[feature] = prevhash_mean;
+    std::size_t coherent = 0U;
+    for (const auto value : prevhash_values) {
+      if (prevhash_mean == 0.0 || value == 0.0 ||
+          ((prevhash_mean > 0.0) == (value > 0.0))) ++coherent;
+    }
+    std::mt19937_64 rng(options.seed ^
+                        (0x94d049bb133111ebULL + feature));
+    std::uniform_int_distribution<std::size_t> choose(0U, prevhash_values.size() - 1U);
+    std::vector<double> bootstrapped;
+    bootstrapped.reserve(options.bootstrap_replicates);
+    for (std::size_t replicate = 0; replicate < options.bootstrap_replicates; ++replicate) {
+      double mean = 0.0;
+      for (std::size_t draw = 0; draw < prevhash_values.size(); ++draw) {
+        mean += prevhash_values[choose(rng)];
+      }
+      bootstrapped.push_back(mean / prevhash_values.size());
+    }
+    csv << schema[feature].name << ',' << schema[feature].category << ','
+        << schema[feature].family << ',' << context_values.size() << ','
+        << prevhash_values.size() << ',' << csv_number(context_mean) << ','
+        << csv_number(context_median) << ',' << csv_number(prevhash_mean) << ','
+        << csv_number(prevhash_median) << ','
+        << csv_number(static_cast<double>(coherent) / prevhash_values.size()) << ','
+        << csv_number(percentile(bootstrapped, 0.025)) << ','
+        << csv_number(percentile(bootstrapped, 0.975))
+        << ",exploratory_primary_discovery_only\n";
+  }
+  return {csv.str(), std::move(primary_scores)};
+}
+
 double percentile(std::vector<double> values, const double fraction) {
   if (values.empty()) return 0.0;
   std::sort(values.begin(), values.end());
@@ -1413,36 +1713,58 @@ std::vector<std::size_t> top_candidate_features(
   return result;
 }
 
+std::vector<std::size_t> top_primary_candidate_features(
+    const std::vector<double>& correlations,
+    const std::vector<SchemaEntry>& schema,
+    const std::size_t maximum) {
+  require(correlations.size() == schema.size(),
+          "primary candidate scores do not match feature schema");
+  std::vector<std::pair<double, std::size_t>> order;
+  for (std::size_t i = 0; i < correlations.size(); ++i) {
+    if (schema[i].family == "SANITY_BASELINE") continue;
+    if (std::isfinite(correlations[i]) && std::abs(correlations[i]) > 0.0) {
+      order.emplace_back(std::abs(correlations[i]), i);
+    }
+  }
+  std::stable_sort(order.begin(), order.end(), [](const auto& left, const auto& right) {
+    if (left.first != right.first) return left.first > right.first;
+    return left.second < right.second;
+  });
+  std::vector<std::size_t> result;
+  for (std::size_t i = 0; i < std::min(maximum, order.size()); ++i) {
+    result.push_back(order[i].second);
+  }
+  return result;
+}
+
 nlohmann::json permutation_analysis(
     const std::vector<Row>& rows, const std::vector<SchemaEntry>& schema,
-    const std::vector<double>& correlations, const Options& options) {
-  const auto candidates = top_candidate_features(
-      correlations, options.selected_feature_count);
-  std::map<std::string, std::vector<std::size_t>> prevhashes, contexts;
+    const std::vector<double>& primary_scores, const Options& options) {
+  const auto candidates = top_primary_candidate_features(
+      primary_scores, schema, options.selected_feature_count);
+  std::map<std::string, std::vector<std::size_t>> contexts;
   for (std::size_t i = 0; i < rows.size(); ++i) {
-    prevhashes[rows[i].prevhash].push_back(i);
     contexts[rows[i].context].push_back(i);
   }
-  std::vector<std::vector<std::size_t>> group_indices;
-  for (const auto& [unused, indices] : prevhashes) group_indices.push_back(indices);
-  const auto y = target(rows, 0U);
+  std::vector<double> y;
+  y.reserve(rows.size());
+  for (const auto& row : rows) y.push_back(row.context_quality_score);
   nlohmann::json results = nlohmann::json::array();
   for (const auto feature : candidates) {
-    const auto x = column(rows, feature);
-    const auto observed = spearman(x, y);
+    const auto observed = primary_scores[feature];
+    const auto prevhash_statistics =
+        primary_prevhash_feature_statistics(rows, feature);
     std::mt19937_64 bootstrap_rng(options.seed ^ (0x9e3779b97f4a7c15ULL + feature));
     std::vector<double> bootstrapped;
     bootstrapped.reserve(options.bootstrap_replicates);
-    std::uniform_int_distribution<std::size_t> choose_group(0U, group_indices.size() - 1U);
+    std::uniform_int_distribution<std::size_t> choose_group(
+        0U, prevhash_statistics.size() - 1U);
     for (std::size_t replicate = 0; replicate < options.bootstrap_replicates; ++replicate) {
-      std::vector<double> bx, by;
-      for (std::size_t draw = 0; draw < group_indices.size(); ++draw) {
-        for (const auto index : group_indices[choose_group(bootstrap_rng)]) {
-          bx.push_back(x[index]);
-          by.push_back(y[index]);
-        }
+      double mean = 0.0;
+      for (std::size_t draw = 0; draw < prevhash_statistics.size(); ++draw) {
+        mean += prevhash_statistics[choose_group(bootstrap_rng)];
       }
-      bootstrapped.push_back(spearman(bx, by));
+      bootstrapped.push_back(mean / prevhash_statistics.size());
     }
     std::mt19937_64 permutation_rng(options.seed ^ (0xd1b54a32d192ed03ULL + feature));
     std::size_t as_or_more_extreme = 0U;
@@ -1455,25 +1777,31 @@ nlohmann::json permutation_analysis(
         std::shuffle(local.begin(), local.end(), permutation_rng);
         for (std::size_t i = 0; i < indices.size(); ++i) permuted[indices[i]] = local[i];
       }
-      if (std::abs(spearman(x, permuted)) >= std::abs(observed)) ++as_or_more_extreme;
+      const auto permuted_prevhash = primary_prevhash_feature_statistics(
+          rows, feature, &permuted);
+      const auto permuted_statistic = std::accumulate(
+          permuted_prevhash.begin(), permuted_prevhash.end(), 0.0) /
+          permuted_prevhash.size();
+      if (std::abs(permuted_statistic) >= std::abs(observed)) ++as_or_more_extreme;
     }
     results.push_back({
         {"feature", schema[feature].name}, {"category", schema[feature].category},
-        {"observed_spearman_quality_bits", observed},
+        {"observed_mean_prevhash_intra_context_spearman", observed},
         {"prevhash_bootstrap_ci95", {percentile(bootstrapped, 0.025),
                                      percentile(bootstrapped, 0.975)}},
-        {"within_context_permutation_p_value",
+        {"post_selection_unadjusted_within_context_permutation_p_value",
          static_cast<double>(as_or_more_extreme + 1U) /
              static_cast<double>(options.permutation_replicates + 1U)},
-        {"status", "exploratory_candidate_selected_on_discovery"}});
+        {"status", "POST_SELECTION_EXPLORATORY_UNADJUSTED_NOT_EVIDENCE"}});
   }
   return {
       {"schema_version", kSchemaVersion}, {"phase", "2A_DISCOVERY_ONLY"},
       {"seed", options.seed}, {"independent_bootstrap_unit", "prevhash"},
-      {"permutation", "quality labels shuffled within each discovery context"},
+      {"permutation", "context_quality_score labels shuffled within each discovery context"},
       {"bootstrap_replicates", options.bootstrap_replicates},
       {"permutation_replicates", options.permutation_replicates},
-      {"candidate_selection", "largest absolute discovery Spearman; exploratory and not validated"},
+      {"candidate_selection", "largest absolute mean prevhash intra-context Spearman; SANITY_BASELINE excluded"},
+      {"multiple_selection_adjustment", "none; post-selection values are exploratory and unadjusted"},
       {"tested_candidate_count", candidates.size()}, {"results", std::move(results)},
       {"validation_rows_used", 0}, {"holdout_rows_used", 0}};
 }
@@ -1490,10 +1818,10 @@ struct TopkArtifacts {
   std::size_t score_count{};
 };
 
-TopkArtifacts topk_analysis(const std::vector<Row>& rows,
-                            const std::vector<SchemaEntry>& schema,
-                            const std::vector<double>& correlations,
-                            const Options& options) {
+TopkArtifacts global_topk_analysis(const std::vector<Row>& rows,
+                                   const std::vector<SchemaEntry>& schema,
+                                   const std::vector<double>& correlations,
+                                   const Options& options) {
   std::vector<Score> scores;
   const auto find_feature = [&](const std::string& name) {
     const auto found = std::find_if(schema.begin(), schema.end(), [&](const auto& entry) {
@@ -1512,12 +1840,12 @@ TopkArtifacts topk_analysis(const std::vector<Row>& rows,
   for (const auto feature : candidates) {
     scores.push_back({schema[feature].name, column(rows, feature),
                       correlations[feature] >= 0.0,
-                      "exploratory_candidate_selected_on_discovery"});
+                      "secondary_global_exploratory_candidate"});
   }
   std::vector<double> cv_values;
   for (const auto& row : rows) cv_values.push_back(row.cv_prediction);
-  scores.push_back({"grouped_outer_cv_ridge", std::move(cv_values), true,
-                    "cross_validated_discovery_prediction"});
+  scores.push_back({"grouped_outer_cv_quality_ridge", std::move(cv_values), true,
+                    "secondary_global_cross_validated_prediction"});
 
   std::map<std::string, std::vector<std::size_t>> groups;
   for (std::size_t i = 0; i < rows.size(); ++i) groups[rows[i].prevhash].push_back(i);
@@ -1609,6 +1937,182 @@ TopkArtifacts topk_analysis(const std::vector<Row>& rows,
   return {csv.str(), scores.size()};
 }
 
+TopkArtifacts intra_context_topk_analysis(
+    const std::vector<Row>& rows, const std::vector<SchemaEntry>& schema,
+    const std::vector<double>& primary_scores,
+    const CvArtifacts& rank_cv, const Options& options) {
+  std::vector<Score> scores;
+  const auto find_feature = [&](const std::string& name) {
+    const auto found = std::find_if(schema.begin(), schema.end(), [&](const auto& entry) {
+      return entry.name == name;
+    });
+    require(found != schema.end(), "missing sanity baseline " + name);
+    return static_cast<std::size_t>(found - schema.begin());
+  };
+  for (const auto& name : {"baseline.random_deterministic", "baseline.numeric_extranonce2",
+                           "baseline.hash_extranonce2", "baseline.header_prefix_hamming_weight"}) {
+    scores.push_back({name, column(rows, find_feature(name)), true, "sanity_baseline"});
+  }
+  const auto candidates = top_primary_candidate_features(
+      primary_scores, schema,
+      std::min<std::size_t>(16U, options.selected_feature_count));
+  for (const auto feature : candidates) {
+    scores.push_back({schema[feature].name, column(rows, feature),
+                      primary_scores[feature] >= 0.0,
+                      "primary_intra_context_exploratory_candidate"});
+  }
+  scores.push_back({"grouped_outer_cv_rank_ridge", rank_cv.predictions, true,
+                    "primary_intra_context_oof_prediction"});
+
+  std::vector<std::string> context_ids;
+  context_ids.reserve(rows.size());
+  std::map<std::string, std::vector<std::size_t>> prevhash_groups;
+  std::set<std::string> distinct_contexts;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    context_ids.push_back(rows[i].context);
+    distinct_contexts.insert(rows[i].context);
+    prevhash_groups[rows[i].prevhash].push_back(i);
+  }
+  std::vector<std::vector<std::size_t>> groups;
+  for (const auto& [unused, indices] : prevhash_groups) groups.push_back(indices);
+  const auto global_quality = std::accumulate(rows.begin(), rows.end(), 0.0,
+      [](const double sum, const Row& row) { return sum + row.quality; }) / rows.size();
+  std::array<double, 7> total_tails{};
+  for (const auto& row : rows) {
+    for (std::size_t tail = 0; tail < total_tails.size(); ++tail) total_tails[tail] += row.tails[tail];
+  }
+
+  std::ostringstream csv;
+  csv << "score,status,descending,top_fraction,context_count,selected_rows,"
+         "selected_per_context_min,selected_per_context_max,actual_fraction,"
+         "mean_quality_bits,quality_mean_lift,quality_lift_bootstrap_ci_low,"
+         "quality_lift_bootstrap_ci_high,best_difficulty_descriptive";
+  for (const auto bits : kTailBits) {
+    csv << ",T" << bits << "_captured,T" << bits << "_capture_fraction,T"
+        << bits << "_lift,T" << bits << "_lift_bootstrap_ci_low,T"
+        << bits << "_lift_bootstrap_ci_high";
+  }
+  csv << '\n';
+
+  for (std::size_t score_index = 0; score_index < scores.size(); ++score_index) {
+    const auto& score = scores[score_index];
+    for (const auto fraction : kTopFractions) {
+      const auto selected = intra_context_topk_selection(
+          context_ids, score.values, fraction, score.descending);
+      std::map<std::string, std::size_t> selected_counts;
+      double quality_sum = 0.0, best_difficulty = 0.0;
+      std::array<double, 7> captured{};
+      for (const auto index : selected) {
+        ++selected_counts[rows[index].context];
+        quality_sum += rows[index].quality;
+        best_difficulty = std::max(best_difficulty, rows[index].difficulty);
+        for (std::size_t tail = 0; tail < captured.size(); ++tail) {
+          captured[tail] += rows[index].tails[tail];
+        }
+      }
+      require(selected_counts.size() == distinct_contexts.size(),
+              "intra-context top-k omitted a context");
+      std::size_t minimum_selected = std::numeric_limits<std::size_t>::max();
+      std::size_t maximum_selected = 0U;
+      for (const auto& [unused, count] : selected_counts) {
+        minimum_selected = std::min(minimum_selected, count);
+        maximum_selected = std::max(maximum_selected, count);
+      }
+      const auto actual_fraction = static_cast<double>(selected.size()) / rows.size();
+      const auto mean_quality = quality_sum / selected.size();
+      const auto lift = global_quality != 0.0 ? mean_quality / global_quality : 0.0;
+
+      struct GroupMetric {
+        double all_quality{};
+        std::size_t all_count{};
+        double selected_quality{};
+        std::size_t selected_count{};
+        std::array<double, 7> all_tails{};
+        std::array<double, 7> selected_tails{};
+      };
+      std::vector<GroupMetric> group_metrics;
+      for (const auto& group : groups) {
+        std::vector<std::string> local_contexts;
+        std::vector<double> local_scores;
+        GroupMetric metric;
+        for (const auto index : group) {
+          local_contexts.push_back(rows[index].context);
+          local_scores.push_back(score.values[index]);
+          metric.all_quality += rows[index].quality;
+          ++metric.all_count;
+          for (std::size_t tail = 0; tail < metric.all_tails.size(); ++tail) {
+            metric.all_tails[tail] += rows[index].tails[tail];
+          }
+        }
+        const auto local_selected = intra_context_topk_selection(
+            local_contexts, local_scores, fraction, score.descending);
+        for (const auto local_index : local_selected) {
+          metric.selected_quality += rows[group[local_index]].quality;
+          ++metric.selected_count;
+          for (std::size_t tail = 0; tail < metric.selected_tails.size(); ++tail) {
+            metric.selected_tails[tail] += rows[group[local_index]].tails[tail];
+          }
+        }
+        group_metrics.push_back(metric);
+      }
+      std::mt19937_64 rng(options.seed ^
+          (score_index * 0x9e3779b97f4a7c15ULL) ^
+          static_cast<std::uint64_t>(fraction * 10000.0));
+      std::uniform_int_distribution<std::size_t> choose(0U, group_metrics.size() - 1U);
+      std::vector<double> bootstrap_lifts;
+      std::array<std::vector<double>, 7> bootstrap_tail_lifts;
+      for (auto& values : bootstrap_tail_lifts) {
+        values.reserve(options.bootstrap_replicates);
+      }
+      for (std::size_t replicate = 0; replicate < options.bootstrap_replicates; ++replicate) {
+        GroupMetric sampled;
+        for (std::size_t draw = 0; draw < group_metrics.size(); ++draw) {
+          const auto& metric = group_metrics[choose(rng)];
+          sampled.all_quality += metric.all_quality;
+          sampled.all_count += metric.all_count;
+          sampled.selected_quality += metric.selected_quality;
+          sampled.selected_count += metric.selected_count;
+          for (std::size_t tail = 0; tail < sampled.all_tails.size(); ++tail) {
+            sampled.all_tails[tail] += metric.all_tails[tail];
+            sampled.selected_tails[tail] += metric.selected_tails[tail];
+          }
+        }
+        const auto all_mean = sampled.all_quality / sampled.all_count;
+        const auto selected_mean = sampled.selected_quality / sampled.selected_count;
+        bootstrap_lifts.push_back(all_mean != 0.0 ? selected_mean / all_mean : 0.0);
+        const auto sampled_fraction =
+            static_cast<double>(sampled.selected_count) / sampled.all_count;
+        for (std::size_t tail = 0; tail < sampled.all_tails.size(); ++tail) {
+          const auto sampled_capture = sampled.all_tails[tail] > 0.0
+              ? sampled.selected_tails[tail] / sampled.all_tails[tail] : 0.0;
+          bootstrap_tail_lifts[tail].push_back(
+              sampled_fraction > 0.0 ? sampled_capture / sampled_fraction : 0.0);
+        }
+      }
+
+      csv << score.name << ',' << score.status << ',' << (score.descending ? 1 : 0)
+          << ',' << csv_number(fraction) << ',' << distinct_contexts.size() << ','
+          << selected.size() << ',' << minimum_selected << ',' << maximum_selected
+          << ',' << csv_number(actual_fraction) << ',' << csv_number(mean_quality)
+          << ',' << csv_number(lift) << ','
+          << csv_number(percentile(bootstrap_lifts, 0.025)) << ','
+          << csv_number(percentile(bootstrap_lifts, 0.975)) << ','
+          << csv_number(best_difficulty);
+      for (std::size_t tail = 0; tail < captured.size(); ++tail) {
+        const auto capture_fraction = total_tails[tail] > 0.0
+            ? captured[tail] / total_tails[tail] : 0.0;
+        csv << ',' << csv_number(captured[tail]) << ',' << csv_number(capture_fraction)
+            << ',' << csv_number(actual_fraction > 0.0
+                                      ? capture_fraction / actual_fraction : 0.0)
+            << ',' << csv_number(percentile(bootstrap_tail_lifts[tail], 0.025))
+            << ',' << csv_number(percentile(bootstrap_tail_lifts[tail], 0.975));
+      }
+      csv << '\n';
+    }
+  }
+  return {csv.str(), scores.size()};
+}
+
 nlohmann::json schema_json(const std::vector<SchemaEntry>& schema) {
   nlohmann::json entries = nlohmann::json::array();
   std::map<std::string, std::size_t> categories, families;
@@ -1647,9 +2151,11 @@ void write_derived_jsonl(const std::filesystem::path& path,
 
 std::string report_markdown(const LoadedData& data,
                             const UnivariateArtifacts& univariate,
-                            const CvArtifacts& cv,
+                            const CvArtifacts& quality_cv,
+                            const CvArtifacts& rank_cv,
                             const nlohmann::json& permutation,
-                            const TopkArtifacts& topk,
+                            const TopkArtifacts& intra_topk,
+                            const TopkArtifacts& global_topk,
                             const Options& options) {
   std::set<std::string> contexts, prevhashes;
   for (const auto& row : data.rows) {
@@ -1670,6 +2176,17 @@ std::string report_markdown(const LoadedData& data,
          << "- Holdout rows used: 0\n"
          << "- Derived PRE_SCAN features: " << data.schema.size() << "\n"
          << "- Univariate hypotheses counted: " << univariate.tested_hypotheses << "\n\n"
+         << "## Primary operational objective\n\n"
+         << "The primary question is whether PRE_SCAN features can rank extranonce2 candidates **within each "
+            "Stratum context J** so that the best B(J,e) spaces can be scanned first. The normalized training "
+            "target is `(n_context - mean_rank_quality_bits) / (n_context - 1)`, with 1.0 best and 0.0 worst. "
+            "It is POST_SCAN and is used only as Y. Feature summaries first compute a Spearman statistic in each "
+            "context, average the two context statistics within each prevhash, and treat the "
+         << prevhashes.size() << " prevhashes as the strong units for summaries and bootstrap intervals.\n\n"
+         << "Operational top-k selection is performed independently inside every context before selections are "
+            "combined. The primary ridge model is trained on `context_quality_score`; `SANITY_BASELINE` features "
+            "are categorically ineligible for its feature selection. Its OOF predictions are ranked within each "
+            "test context.\n\n"
          << "## Methods\n\n"
          << "Rounds 0–2 of SHA-256 compression 1, the round-3 fixed boundary, W16/W17, fixed carries, "
             "and exact uniform-nonce carry expectations were reconstructed through the repository's existing "
@@ -1677,16 +2194,19 @@ std::string report_markdown(const LoadedData& data,
             "chosen by the minimum `(SHA256(ASCII block_id), block_id)` and never by a label.\n\n"
          << "Pearson, Spearman, and Kendall tau-b are reported separately for each declared target. "
             "Candidate intervals bootstrap whole prevhash groups. Permutations shuffle labels within contexts. "
-            "The ridge model uses " << cv.summary.at("outer_fold_count")
+            "Both ridge models use " << rank_cv.summary.at("outer_fold_count")
          << " outer grouped folds; scaling, feature selection, and lambda choice are fit only inside training data. "
             "Seed: `" << options.seed << "`.\n\n"
-         << "Top-k output compares " << topk.score_count
-         << " scores, including all four sanity baselines and grouped outer-CV predictions.\n\n"
+         << "Primary intra-context top-k compares " << intra_topk.score_count
+         << " scores. The global quality model and global top-k comparison ("
+         << global_topk.score_count << " scores) are retained only as **SECONDARY / DESCRIPTIVE** analyses. "
+            "Their pooled ranking is not the operational test.\n\n"
          << "## Interpretation\n\n"
          << "Every result in this directory is exploratory or discovery-cross-validated. **Nothing in Phase 2A "
             "is validated**, and these artifacts do not establish a SHA weakness or a proven mining advantage. "
             "A recipe must be frozen before a later Phase 2B validation analysis.\n\n"
          << "Permutation candidates tested: " << permutation.at("tested_candidate_count") << ".\n";
+  (void)quality_cv;
   return report.str();
 }
 
@@ -1700,6 +2220,7 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
   require(options.outer_folds >= 2U, "outer fold count must be at least two");
   require(options.selected_feature_count > 0U,
           "selected feature count must be positive");
+  require(!options.expected_campaign_id.empty(), "expected campaign_id must be explicit");
   const auto output_directory = campaign_directory / "phase2_discovery_v1";
   if (!options.check_only) {
     require(!std::filesystem::exists(output_directory),
@@ -1726,6 +2247,10 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
           "source analysis says holdout.opened=true");
 
   auto data = load_discovery(campaign_directory, !options.check_only);
+  require(data.manifest.at("campaign_id").get<std::string>() ==
+              options.expected_campaign_id,
+          "campaign_id is not the frozen Phase 2A campaign " +
+              options.expected_campaign_id);
   std::set<std::string> contexts, prevhashes;
   for (const auto& row : data.rows) {
     contexts.insert(row.context);
@@ -1735,6 +2260,7 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
       {"schema_version", kSchemaVersion},
       {"phase", "2A_DISCOVERY_ONLY"},
       {"campaign_id", data.manifest.at("campaign_id")},
+      {"expected_campaign_id", options.expected_campaign_id},
       {"timestamp_utc", data.manifest.value("created_at_utc", "unknown")},
       {"timestamp_policy", "source campaign timestamp retained for byte-reproducibility"},
 #ifdef SRM_CODE_VERSION
@@ -1784,14 +2310,23 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
   const auto univariate = univariate_analysis(data.rows, data.schema);
   std::cout << "Phase 2A statistics: intra-context and prevhash summaries\n";
   const auto grouped = group_analysis(data.rows, data.schema);
-  std::cout << "Phase 2A statistics: nested grouped cross-validation\n";
-  const auto cv = grouped_nested_cv(data.rows, data.schema, options);
+  const auto primary_features = primary_feature_analysis(
+      data.rows, data.schema, options);
+  prepare_context_feature_ranks(data.rows);
+  std::cout << "Phase 2A statistics: primary rank and secondary quality grouped CV\n";
+  const auto rank_cv = grouped_nested_cv(
+      data.rows, data.schema, options, ModelTarget::ContextQualityScore);
+  const auto quality_cv = grouped_nested_cv(
+      data.rows, data.schema, options, ModelTarget::AbsoluteQuality);
   std::cout << "Phase 2A statistics: grouped bootstrap and permutations\n";
   const auto permutation = permutation_analysis(
+      data.rows, data.schema, primary_features.mean_prevhash_spearman, options);
+  std::cout << "Phase 2A statistics: primary intra-context and secondary global top-k\n";
+  const auto intra_topk = intra_context_topk_analysis(
+      data.rows, data.schema, primary_features.mean_prevhash_spearman,
+      rank_cv, options);
+  const auto global_topk = global_topk_analysis(
       data.rows, data.schema, univariate.quality_spearman, options);
-  std::cout << "Phase 2A statistics: top-k lift\n";
-  const auto topk = topk_analysis(data.rows, data.schema,
-                                  univariate.quality_spearman, options);
 
   nlohmann::json digests_after = nlohmann::json::object();
   for (const auto& path : source_paths) digests_after[path.filename().string()] = file_sha256(path);
@@ -1802,18 +2337,31 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
       {"all_univariate_hypotheses_counted", univariate.tested_hypotheses},
       {"permutation_candidate_tests", permutation.at("tested_candidate_count")},
       {"phase2a_validated_results", 0},
-      {"interpretation", "exploratory discovery-only"}};
+      {"post_selection_p_values_adjusted", false},
+      {"interpretation", "POST_SELECTION / EXPLORATORY / UNADJUSTED; not evidence"}};
   audit["statistical_configuration"] = {
       {"outer_folds", options.outer_folds},
       {"bootstrap_replicates", options.bootstrap_replicates},
       {"permutation_replicates", options.permutation_replicates},
       {"ridge_lambda_grid", kLambdas},
       {"selected_feature_count", options.selected_feature_count}};
+  audit["analysis_roles"] = {
+      {"primary_operational", {
+          "intra_context_feature_summary.csv", "topk_lift_intra_context.csv",
+          "grouped_cv_rank_summary.json", "grouped_cv_rank_predictions.csv"}},
+      {"secondary_descriptive", {
+          "univariate_features.csv", "intra_context_rank.csv",
+          "per_prevhash_summary.csv", "grouped_cv_summary.json",
+          "grouped_cv_predictions.csv", "topk_lift_global_descriptive.csv"}},
+      {"primary_ridge_excluded_feature_families", {"SANITY_BASELINE"}}};
   audit["artifacts"] = {
       "audit.json", "feature_schema.json", "derived_features_discovery.jsonl",
       "univariate_features.csv", "intra_context_rank.csv",
-      "per_prevhash_summary.csv", "grouped_cv_predictions.csv",
-      "grouped_cv_summary.json", "topk_lift.csv", "permutation_summary.json",
+      "per_prevhash_summary.csv", "intra_context_feature_summary.csv",
+      "grouped_cv_rank_predictions.csv", "grouped_cv_rank_summary.json",
+      "topk_lift_intra_context.csv", "grouped_cv_predictions.csv",
+      "grouped_cv_summary.json", "topk_lift_global_descriptive.csv",
+      "permutation_summary.json",
       "report.md"};
 
   std::filesystem::create_directory(output_directory);
@@ -1823,12 +2371,20 @@ nlohmann::json run(const std::filesystem::path& campaign_directory,
   write_text(output_directory / "univariate_features.csv", univariate.csv);
   write_text(output_directory / "intra_context_rank.csv", grouped.intra_context_csv);
   write_text(output_directory / "per_prevhash_summary.csv", grouped.per_prevhash_csv);
-  write_text(output_directory / "grouped_cv_predictions.csv", cv.predictions_csv);
-  write_json(output_directory / "grouped_cv_summary.json", cv.summary);
-  write_text(output_directory / "topk_lift.csv", topk.csv);
+  write_text(output_directory / "intra_context_feature_summary.csv",
+             primary_features.csv);
+  write_text(output_directory / "grouped_cv_rank_predictions.csv",
+             rank_cv.predictions_csv);
+  write_json(output_directory / "grouped_cv_rank_summary.json", rank_cv.summary);
+  write_text(output_directory / "topk_lift_intra_context.csv", intra_topk.csv);
+  write_text(output_directory / "grouped_cv_predictions.csv",
+             quality_cv.predictions_csv);
+  write_json(output_directory / "grouped_cv_summary.json", quality_cv.summary);
+  write_text(output_directory / "topk_lift_global_descriptive.csv", global_topk.csv);
   write_json(output_directory / "permutation_summary.json", permutation);
   write_text(output_directory / "report.md",
-             report_markdown(data, univariate, cv, permutation, topk, options));
+             report_markdown(data, univariate, quality_cv, rank_cv,
+                             permutation, intra_topk, global_topk, options));
   write_json(output_directory / "audit.json", audit);
   std::cout << "Phase 2A total: " << std::fixed << std::setprecision(3)
             << std::chrono::duration<double>(

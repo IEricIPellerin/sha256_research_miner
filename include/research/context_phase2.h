@@ -57,4 +57,9 @@ std::vector<std::size_t> intra_context_topk_selection(
 nlohmann::json run(const std::filesystem::path& campaign_directory,
                    const Options& options = {});
 
+// Runs a separate immutable discovery-only refinement. It never modifies or
+// replaces phase2_discovery_v1 and writes only phase2_discovery_v1_refinement.
+nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
+                              const Options& options = {});
+
 }  // namespace srm::research::context_phase2

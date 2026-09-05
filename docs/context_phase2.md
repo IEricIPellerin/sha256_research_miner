@@ -90,3 +90,47 @@ results remain exploratory. Scaling and feature selection are fit only on the
 relevant training split; lambda selection uses an inner prevhash-grouped CV.
 Validation and holdout rows used are always zero. Nothing in Phase 2A is
 labelled validated.
+
+## Separate discovery refinement
+
+`phase2-refinement` requires the immutable `phase2_discovery_v1` directory and
+writes only `phase2_discovery_v1_refinement`. The new directory is never
+overwritten. SHA-256 digests of both the frozen campaign sources and every
+historical Phase 2A artifact are checked before and after the run.
+
+The refinement keeps the same seed and nested prevhash-grouped folds while
+extending the ridge grid to `0.1, 1, 10, 100, 1000, 10000, 100000, 1000000`.
+Every outer fold records all inner-CV RMSE values, its selected lambda, boundary
+status, selected features, and complete inner/outer group provenance. Outer
+test metrics are never used to select lambda.
+
+The `EXPLORATORY_DISCOVERY_T30` branch builds mean ranks of
+`quality.tail_counts.leading_zero_30` inside each context. This POST_SCAN value
+is Y-only and never enters the PRE_SCAN feature matrix. It produces a distinct
+T30 feature summary, nested-CV OOF predictions, per-prevhash Spearman
+distribution, and intra-context top-k capture table with whole-prevhash
+bootstrap intervals.
+
+The selection-aware permutation shuffles Y inside every context. For every
+permutation it recomputes all admissible feature scores, repeats selection, and
+records the maximum absolute mean-prevhash intra-context Spearman statistic.
+`SANITY_BASELINE` features are excluded from scientific candidates and receive
+a separate control maximum.
+
+Dry-run only:
+
+```bat
+build\windows-release\Release\sha256_context_analyzer.exe phase2-refinement ^
+  --campaign results\context_analysis\ctx_20260904_165537_41323536 --check
+```
+
+Full refinement, only after explicit review:
+
+```bat
+build\windows-release\Release\sha256_context_analyzer.exe phase2-refinement ^
+  --campaign results\context_analysis\ctx_20260904_165537_41323536
+```
+
+The BAT menu exposes this as option 10. Every refinement result remains
+`DISCOVERY / EXPLORATORY / NOT VALIDATED`; it does not freeze or select a Phase
+2B recipe.

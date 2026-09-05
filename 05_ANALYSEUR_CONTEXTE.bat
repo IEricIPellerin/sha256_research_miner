@@ -31,6 +31,7 @@ echo [6] Taille personnalisee
 echo [7] Smoke test tres court
 echo [8] Resume du corpus Stratum
 echo [9] PHASE 2 - ranking intra-contexte (DISCOVERY seulement)
+echo [10] PHASE 2 REFINEMENT - ridge/T30/max-stat (DISCOVERY seulement)
 echo [0] Quitter
 echo.
 set /p "CHOICE=Choix: "
@@ -44,6 +45,7 @@ if "%CHOICE%"=="6" "%ANALYZER%" new --profile CUSTOM & goto done
 if "%CHOICE%"=="7" "%ANALYZER%" smoke --benchmark-nonces 1048576 --smoke-nonces 65536 & goto done
 if "%CHOICE%"=="8" "%ANALYZER%" corpus & goto done
 if "%CHOICE%"=="9" goto phase2
+if "%CHOICE%"=="10" goto phase2refinement
 if "%CHOICE%"=="0" exit /b 0
 echo Choix invalide.
 pause
@@ -63,6 +65,21 @@ echo.
 set /p "CONFIRM2=Confirmer Phase 2A [O/N]: "
 if /i "%CONFIRM2%"=="O" "%ANALYZER%" phase2 --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
 if /i "%CONFIRM2%"=="OUI" "%ANALYZER%" phase2 --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
+goto done
+
+:phase2refinement
+echo.
+echo CAMPAGNE: ctx_20260904_165537_41323536 (figee)
+echo MODE: PHASE 2A REFINEMENT DISCOVERY ONLY
+echo SORTIE: phase2_discovery_v1_refinement (non ecrasable)
+echo Validation utilisee: NON
+echo Holdout utilise: NON
+echo Aucun scan GPU/nonce: oui
+echo Phase 2A historique modifiee: NON
+echo.
+set /p "CONFIRM2R=Confirmer le refinement discovery [O/N]: "
+if /i "%CONFIRM2R%"=="O" "%ANALYZER%" phase2-refinement --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
+if /i "%CONFIRM2R%"=="OUI" "%ANALYZER%" phase2-refinement --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
 goto done
 
 :done

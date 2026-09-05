@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -82,7 +83,8 @@ nlohmann::json label(const std::string& id, const std::string& partition,
 
 std::filesystem::path fixture(const std::string& suffix,
                               const double holdout_quality = 999999.0,
-                              const bool swap_first_context_targets = false) {
+                              const bool swap_first_context_targets = false,
+                              const bool expanded_refinement = false) {
   const auto directory = std::filesystem::temp_directory_path() /
       ("srm_phase2_" + suffix + "_" + std::to_string(
           std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -103,6 +105,26 @@ std::filesystem::path fixture(const std::string& suffix,
       {"d31", "discovery", "c3", "p1", 36.0},
       {"validation-secret", "validation", "cv", "pv", 1.0e100},
       {"holdout-secret", "holdout", "ch", "ph", holdout_quality}};
+  if (expanded_refinement) {
+    items.clear();
+    for (std::size_t prevhash = 0; prevhash < 6U; ++prevhash) {
+      for (std::size_t context = 0; context < 2U; ++context) {
+        for (std::size_t candidate = 0; candidate < 3U; ++candidate) {
+          const auto id = "r" + std::to_string(prevhash) + "_" +
+                          std::to_string(context) + "_" +
+                          std::to_string(candidate);
+          const auto quality = 30.0 + static_cast<double>(
+              (prevhash * 11U + context * 5U + candidate * 3U) % 15U);
+          items.push_back({id, "discovery",
+                           "c" + std::to_string(prevhash) + "_" +
+                               std::to_string(context),
+                           "p" + std::to_string(prevhash), quality});
+        }
+      }
+    }
+    items.push_back({"validation-secret", "validation", "cv", "pv", 1.0e100});
+    items.push_back({"holdout-secret", "holdout", "ch", "ph", holdout_quality});
+  }
   if (swap_first_context_targets) {
     std::swap(items[0].quality, items[1].quality);
   }
@@ -127,7 +149,9 @@ std::filesystem::path fixture(const std::string& suffix,
   }
   {
     std::ofstream output(directory / "checkpoint.json", std::ios::binary);
-    output << R"({"campaign_id":"phase2-test","status":"COMPLETE","completed_blocks":10})";
+    output << nlohmann::json({{"campaign_id", "phase2-test"},
+                              {"status", "COMPLETE"},
+                              {"completed_blocks", items.size()}}).dump();
   }
   {
     std::ofstream output(directory / "analysis_summary.json", std::ios::binary);
@@ -158,6 +182,17 @@ std::map<std::string, std::pair<std::string, std::string>> rank_prediction_cells
     while (std::getline(row, cell, ',')) cells.push_back(cell);
     REQUIRE(cells.size() >= 6U);
     result[cells[0]] = {cells[4], cells[5]};
+  }
+  return result;
+}
+
+std::map<std::string, std::string> directory_contents(
+    const std::filesystem::path& directory) {
+  std::map<std::string, std::string> result;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
+    if (!entry.is_regular_file()) continue;
+    result[std::filesystem::relative(entry.path(), directory).generic_string()] =
+        read_all(entry.path());
   }
   return result;
 }
@@ -386,5 +421,158 @@ TEST_CASE("Phase 2 dry-run writes no artifacts") {
   REQUIRE_EQ(audit.at("status").get<std::string>(), "DRY_RUN_CHECK_PASSED");
   REQUIRE_EQ(audit.at("artifacts_written").get<unsigned>(), 0U);
   REQUIRE(!std::filesystem::exists(directory / "phase2_discovery_v1"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Phase 2 refinement keeps T30 Y-only and all nested selection train-only") {
+  const auto directory = fixture(
+      "refinement_full", 999999.0, false, true);
+  phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
+  options.outer_folds = 3U;
+  options.bootstrap_replicates = 2U;
+  options.permutation_replicates = 3U;
+  options.selected_feature_count = 4U;
+  (void)phase2::run(directory, options);
+  const auto historical_directory = directory / "phase2_discovery_v1";
+  const auto historical_before = directory_contents(historical_directory);
+  const std::array<std::string, 6> source_names{
+      "manifest.json", "checkpoint.json", "features.jsonl", "block_labels.jsonl",
+      "analysis_summary.json", "report.md"};
+  std::map<std::string, std::string> source_before;
+  for (const auto& name : source_names) {
+    source_before[name] = read_all(directory / name);
+  }
+
+  const auto audit = phase2::run_refinement(directory, options);
+  REQUIRE_EQ(audit.at("phase").get<std::string>(),
+             "2A_REFINEMENT_DISCOVERY_ONLY");
+  REQUIRE_EQ(audit.at("validation_rows_used").get<std::size_t>(), 0U);
+  REQUIRE_EQ(audit.at("holdout_rows_used").get<std::size_t>(), 0U);
+  REQUIRE(!audit.at("t30_boundary").at("present_in_X").get<bool>());
+  REQUIRE(!audit.at("t30_boundary").at("indirect_feature_derivation").get<bool>());
+  REQUIRE(audit.at("historical_phase2_files_unchanged").get<bool>());
+  REQUIRE_EQ(directory_contents(historical_directory), historical_before);
+  for (const auto& name : source_names) {
+    REQUIRE_EQ(read_all(directory / name), source_before.at(name));
+  }
+
+  const auto output = directory / "phase2_discovery_v1_refinement";
+  REQUIRE(std::filesystem::is_directory(output));
+  const auto schema = read_all(output / "feature_schema.json");
+  REQUIRE(schema.find("tail_counts") == std::string::npos);
+  REQUIRE(schema.find("leading_zero_30") == std::string::npos);
+  const auto t30_predictions = read_all(output / "t30_grouped_cv_predictions.csv");
+  REQUIRE(t30_predictions.find("validation-secret") == std::string::npos);
+  REQUIRE(t30_predictions.find("holdout-secret") == std::string::npos);
+
+  const auto verify_nested_cv = [&](const nlohmann::json& cv,
+                                    const std::string& expected_role) {
+    REQUIRE_EQ(cv.at("role").get<std::string>(), expected_role);
+    REQUIRE_EQ(cv.at("lambda_grid").size(), 8U);
+    REQUIRE_EQ(cv.at("lambda_grid").front().get<double>(), 0.1);
+    REQUIRE_EQ(cv.at("lambda_grid").back().get<double>(), 1000000.0);
+    REQUIRE(!cv.at("outer_test_metrics_used_for_lambda_selection").get<bool>());
+    REQUIRE(!cv.at("target_in_feature_matrix").get<bool>());
+    REQUIRE_EQ(cv.at("metrics").at("per_prevhash_context_spearman_values").size(),
+               6U);
+    for (const auto& fold : cv.at("folds")) {
+      REQUIRE_EQ(fold.at("inner_cv").size(), 8U);
+      REQUIRE(!fold.at("outer_test_metrics_used_for_lambda_selection").get<bool>());
+      double best_error = std::numeric_limits<double>::infinity();
+      double expected_lambda = 0.0;
+      for (const auto& candidate : fold.at("inner_cv")) {
+        const auto error = candidate.at("grouped_inner_cv_rmse").get<double>();
+        if (error < best_error) {
+          best_error = error;
+          expected_lambda = candidate.at("lambda").get<double>();
+        }
+      }
+      REQUIRE_EQ(fold.at("selected_lambda").get<double>(), expected_lambda);
+      const auto selected = fold.at("selected_lambda").get<double>();
+      REQUIRE_EQ(fold.at("selected_lambda_is_grid_boundary").get<bool>(),
+                 selected == 0.1 || selected == 1000000.0);
+      for (const auto& inner : fold.at("inner_folds")) {
+        REQUIRE(inner.at("prevhash_overlap").empty());
+        REQUIRE_EQ(inner.at("feature_selection_scope").get<std::string>(),
+                   "inner_train_only");
+        REQUIRE_EQ(inner.at("normalization_scope").get<std::string>(),
+                   "inner_train_only");
+        REQUIRE_EQ(inner.at("test_target_rows_used_for_training").get<std::size_t>(),
+                   0U);
+        for (const auto& feature : inner.at("selected_features")) {
+          REQUIRE(feature.get<std::string>().rfind("baseline.", 0U) != 0U);
+        }
+      }
+      REQUIRE(fold.at("prevhash_overlap").empty());
+      REQUIRE_EQ(fold.at("feature_selection").at("scope").get<std::string>(),
+                 "outer_train_only");
+      REQUIRE_EQ(fold.at("test_target_rows_used_for_training").get<std::size_t>(),
+                 0U);
+    }
+  };
+  const auto historical_cv = nlohmann::json::parse(read_all(
+      historical_directory / "grouped_cv_rank_summary.json"));
+  const auto refined_cv = nlohmann::json::parse(read_all(
+      output / "ridge_lambda_refinement_summary.json"));
+  const auto t30_cv = nlohmann::json::parse(read_all(
+      output / "t30_grouped_cv_summary.json"));
+  verify_nested_cv(refined_cv, "PRIMARY_OPERATIONAL");
+  verify_nested_cv(t30_cv, "EXPLORATORY_DISCOVERY_T30");
+  REQUIRE_EQ(refined_cv.at("folds").size(), historical_cv.at("folds").size());
+  REQUIRE_EQ(t30_cv.at("folds").size(), historical_cv.at("folds").size());
+  for (std::size_t fold = 0; fold < historical_cv.at("folds").size(); ++fold) {
+    REQUIRE_EQ(refined_cv.at("folds").at(fold).at("test_prevhashes"),
+               historical_cv.at("folds").at(fold).at("test_prevhashes"));
+    REQUIRE_EQ(t30_cv.at("folds").at(fold).at("test_prevhashes"),
+               historical_cv.at("folds").at(fold).at("test_prevhashes"));
+  }
+
+  const auto permutation = nlohmann::json::parse(
+      read_all(output / "selection_aware_permutation_summary.json"));
+  REQUIRE(permutation.at("selection_refit_inside_each_permutation").get<bool>());
+  REQUIRE(permutation.at("feature_scores_recomputed_inside_each_permutation").get<bool>());
+  REQUIRE(permutation.at("max_statistic_includes_all_admissible_features").get<bool>());
+  REQUIRE(permutation.at("sanity_baseline_excluded_from_scientific_candidates").get<bool>());
+  REQUIRE_EQ(permutation.at("admissible_scientific_feature_count").get<std::size_t>(),
+             audit.at("derived_feature_count").get<std::size_t>() - 4U);
+  REQUIRE_EQ(permutation.at("features_scored_per_permutation").get<std::size_t>(),
+             audit.at("derived_feature_count").get<std::size_t>());
+  const auto permutation_null = read_all(
+      output / "selection_aware_permutation_null.csv");
+  REQUIRE_EQ(static_cast<std::size_t>(std::count(
+                 permutation_null.begin(), permutation_null.end(), '\n')),
+             options.permutation_replicates + 1U);
+
+  bool overwrite_rejected = false;
+  try {
+    (void)phase2::run_refinement(directory, options);
+  } catch (const std::exception&) {
+    overwrite_rejected = true;
+  }
+  REQUIRE(overwrite_rejected);
+  REQUIRE_EQ(directory_contents(historical_directory), historical_before);
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Phase 2 refinement dry-run writes no refinement artifact") {
+  const auto directory = fixture("refinement_dry_run");
+  phase2::Options options;
+  options.expected_campaign_id = "phase2-test";
+  options.outer_folds = 2U;
+  options.bootstrap_replicates = 1U;
+  options.permutation_replicates = 1U;
+  options.selected_feature_count = 4U;
+  (void)phase2::run(directory, options);
+  const auto historical_before = directory_contents(
+      directory / "phase2_discovery_v1");
+  options.check_only = true;
+  const auto audit = phase2::run_refinement(directory, options);
+  REQUIRE_EQ(audit.at("status").get<std::string>(), "DRY_RUN_CHECK_PASSED");
+  REQUIRE_EQ(audit.at("artifacts_written").get<std::size_t>(), 0U);
+  REQUIRE(!std::filesystem::exists(
+      directory / "phase2_discovery_v1_refinement"));
+  REQUIRE_EQ(directory_contents(directory / "phase2_discovery_v1"),
+             historical_before);
   std::filesystem::remove_all(directory);
 }

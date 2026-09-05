@@ -161,6 +161,9 @@ void print_help() {
       "  phase2 --campaign <dossier> [--check] [--yes]\n"
       "         Phase 2A discovery-only; ranking primaire intra-contexte;\n"
       "         refuse validation/holdout/finalisation\n"
+      "  phase2-refinement --campaign <dossier> [--check] [--yes]\n"
+      "         Grille ridge etendue, branche T30 et permutation max-stat;\n"
+      "         discovery-only, sortie immuable separee\n"
       "  smoke [--smoke-nonces N]       Test court, jamais une vérité terrain\n\n"
       "Dimensionnement (au choix):\n"
       "  --total-blocks N\n"
@@ -257,11 +260,14 @@ std::filesystem::path latest_complete_campaign(const std::filesystem::path& root
 
 int run(const int argc, char** argv) {
   auto args = parse(argc, argv);
-  if (args.command != "phase2" &&
+  const auto phase2_command = args.command == "phase2" ||
+                              args.command == "phase2-refinement";
+  if (!phase2_command &&
       (args.phase2_check || args.partition || args.folds ||
        args.bootstrap_replicates || args.permutation_replicates ||
        args.selected_features)) {
-    throw std::invalid_argument("Phase 2 options are accepted only by the phase2 command");
+    throw std::invalid_argument(
+        "Phase 2 options are accepted only by phase2 or phase2-refinement");
   }
   if (args.command == "help" || args.command == "--help" || args.command == "-h") {
     print_help();
@@ -288,22 +294,27 @@ int run(const int argc, char** argv) {
     std::cout << cc::analyze_campaign(campaign, args.finalize_holdout).dump(2) << '\n';
     return 0;
   }
-  if (args.command == "phase2") {
+  if (phase2_command) {
+    const auto refinement = args.command == "phase2-refinement";
     if (args.finalize_holdout) {
       throw std::invalid_argument(
-          "Phase 2A refuses --finalize-holdout; holdout is invisible");
+          "Phase 2 discovery analysis refuses --finalize-holdout; holdout is invisible");
     }
     if (args.partition && *args.partition != "discovery") {
       throw std::invalid_argument(
-          "Phase 2A refuses --partition " + *args.partition +
+          "Phase 2 discovery analysis refuses --partition " + *args.partition +
           "; only discovery is admissible");
     }
     phase2::Options options;
     const auto campaign = args.campaign.value_or(
         output / options.expected_campaign_id);
     std::cout << "\nCAMPAGNE: " << campaign.string() << '\n'
-              << "MODE: PHASE 2A DISCOVERY ONLY\n"
-              << "OBJECTIF PRIMAIRE: ranking intra-contexte des extranonce2\n"
+              << "MODE: " << (refinement
+                  ? "PHASE 2A REFINEMENT DISCOVERY ONLY\n"
+                  : "PHASE 2A DISCOVERY ONLY\n")
+              << "OBJECTIF: " << (refinement
+                  ? "grille ridge etendue, T30 exploratoire, permutation max-stat\n"
+                  : "ranking intra-contexte des extranonce2\n")
               << "Discovery utilise: oui\n"
               << "Validation utilisee: NON\n"
               << "Holdout utilise: NON\n"
@@ -316,16 +327,20 @@ int run(const int argc, char** argv) {
     if (args.permutation_replicates) options.permutation_replicates = *args.permutation_replicates;
     if (args.selected_features) options.selected_feature_count = *args.selected_features;
     if (!options.check_only && !args.yes) {
-      std::cout << "Confirmer la creation de phase2_discovery_v1 [O/N]: ";
+      std::cout << "Confirmer la creation de "
+                << (refinement ? "phase2_discovery_v1_refinement"
+                               : "phase2_discovery_v1")
+                << " [O/N]: ";
       std::string choice;
       std::getline(std::cin, choice);
       std::transform(choice.begin(), choice.end(), choice.begin(), ::toupper);
       if (choice != "O" && choice != "OUI" && choice != "Y" && choice != "YES") {
-        std::cout << "Phase 2A annulee; aucun artefact cree.\n";
+        std::cout << "Analyse discovery annulee; aucun artefact cree.\n";
         return 0;
       }
     }
-    std::cout << phase2::run(campaign, options).dump(2) << '\n';
+    std::cout << (refinement ? phase2::run_refinement(campaign, options)
+                             : phase2::run(campaign, options)).dump(2) << '\n';
     return 0;
   }
 

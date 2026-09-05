@@ -61,6 +61,32 @@ struct RoundFeatures {
   std::vector<double> values;
 };
 
+// Compact sufficient statistics for one (prevhash, comparison, round,
+// feature) cell. Keeping only sums and a count avoids retaining one string and
+// one heap-backed object per contributing BJE.
+struct PrevhashEffectAccumulator {
+  double sum_rank_biserial{0.0};
+  double sum_ks{0.0};
+  std::size_t count{0};
+};
+
+struct AggregateEffectSummary {
+  std::size_t prevhash_count{0};
+  std::size_t bje_count{0};
+  double mean_rank_biserial{0.0};
+  double median_rank_biserial{0.0};
+  double bootstrap_ci_low{0.0};
+  double bootstrap_ci_high{0.0};
+  double mean_ks{0.0};
+};
+
+void accumulate_effect(PrevhashEffectAccumulator& accumulator,
+                       double rank_biserial,
+                       double ks);
+AggregateEffectSummary aggregate_prevhash_effects(
+    const std::vector<PrevhashEffectAccumulator>& accumulators,
+    std::uint64_t bootstrap_seed);
+
 Plan make_plan(const std::vector<context_campaign::ArchivedContext>& archive,
                Request request,
                context_campaign::BenchmarkResult benchmark);

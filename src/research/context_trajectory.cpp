@@ -694,7 +694,18 @@ int resume_campaign(const std::filesystem::path& directory,
   for (const auto& block : manifest.at("blocks")) if (capture_is_complete(directory, block)) ++completed;
   const auto total = manifest.at("planned_bje").get<std::size_t>();
   std::unique_ptr<header_space::GpuScanner> scanner;
-  if (completed < total) scanner = std::make_unique<header_space::GpuScanner>(device, kernel, local_size);
+  if (completed < total) {
+    if (!std::filesystem::is_regular_file(kernel)) {
+      throw std::runtime_error(
+          "trajectory resume refused: frozen OpenCL kernel file is missing");
+    }
+    const auto frozen_kernel_sha256 = manifest.at("kernel").at("sha256").get<std::string>();
+    if (file_sha256(kernel) != frozen_kernel_sha256) {
+      throw std::runtime_error(
+          "trajectory resume refused: OpenCL kernel SHA-256 differs from frozen manifest");
+    }
+    scanner = std::make_unique<header_space::GpuScanner>(device, kernel, local_size);
+  }
   for (const auto& block : manifest.at("blocks")) {
     if (capture_is_complete(directory, block)) continue;
     const auto id = block.at("block_id").get<std::string>();
@@ -762,7 +773,6 @@ int resume_campaign(const std::filesystem::path& directory,
         {"completed_bje", completed}, {"total_bje", total},
         {"checkpoint_count", checkpoint_count}, {"last_completed_block_id", id},
         {"updated_at_utc", logging::ResultLogger::utc_now()}});
-    refresh_capture_summary(directory, manifest);
     std::cout << "[TRAJECTORY] BJE " << completed << '/' << total
               << "  T20=" << nonces.size() << "  retries=" << scan.overflow_retries
               << "  " << std::fixed << std::setprecision(3)
@@ -878,29 +888,22 @@ double ks_distance(std::vector<double> a, std::vector<double> b) {
   return maximum;
 }
 
-struct BjeEffect { std::string prevhash; double rank_biserial{}, ks{}; };
+struct GroupedScalarEffect { std::string prevhash; double rank_biserial{}, ks{}; };
 
-struct AggregateEffect {
-  std::size_t prevhash_count{}, bje_count{};
-  double mean_rank{}, median_rank{}, ci_low{}, ci_high{}, mean_ks{};
-};
-
-AggregateEffect aggregate_effects(const std::vector<BjeEffect>& effects,
-                                  const std::uint64_t seed) {
-  std::map<std::string, std::vector<BjeEffect>> grouped;
-  for (const auto& effect : effects) grouped[effect.prevhash].push_back(effect);
+AggregateEffectSummary aggregate_accumulator_cells(
+    const std::span<const PrevhashEffectAccumulator> accumulators,
+    const std::uint64_t seed) {
   std::vector<double> per_prevhash_rank, per_prevhash_ks;
-  for (const auto& [unused, group] : grouped) {
-    std::vector<double> ranks_value, ks_value;
-    for (const auto& effect : group) { ranks_value.push_back(effect.rank_biserial); ks_value.push_back(effect.ks); }
-    per_prevhash_rank.push_back(mean(ranks_value));
-    per_prevhash_ks.push_back(mean(ks_value));
+  AggregateEffectSummary result;
+  for (const auto& accumulator : accumulators) {
+    if (accumulator.count == 0U) continue;
+    per_prevhash_rank.push_back(accumulator.sum_rank_biserial / accumulator.count);
+    per_prevhash_ks.push_back(accumulator.sum_ks / accumulator.count);
+    result.bje_count += accumulator.count;
   }
-  AggregateEffect result;
-  result.prevhash_count = grouped.size();
-  result.bje_count = effects.size();
-  result.mean_rank = mean(per_prevhash_rank);
-  result.median_rank = median(per_prevhash_rank);
+  result.prevhash_count = per_prevhash_rank.size();
+  result.mean_rank_biserial = mean(per_prevhash_rank);
+  result.median_rank_biserial = median(per_prevhash_rank);
   result.mean_ks = mean(per_prevhash_ks);
   if (per_prevhash_rank.empty()) return result;
   std::mt19937_64 rng(seed);
@@ -913,17 +916,35 @@ AggregateEffect aggregate_effects(const std::vector<BjeEffect>& effects,
     bootstrap.push_back(sum / per_prevhash_rank.size());
   }
   std::sort(bootstrap.begin(), bootstrap.end());
-  result.ci_low = bootstrap[static_cast<std::size_t>(0.025 * (bootstrap.size() - 1U))];
-  result.ci_high = bootstrap[static_cast<std::size_t>(0.975 * (bootstrap.size() - 1U))];
+  result.bootstrap_ci_low = bootstrap[static_cast<std::size_t>(0.025 * (bootstrap.size() - 1U))];
+  result.bootstrap_ci_high = bootstrap[static_cast<std::size_t>(0.975 * (bootstrap.size() - 1U))];
   return result;
+}
+
+AggregateEffectSummary aggregate_grouped_scalar_effects(
+    const std::vector<GroupedScalarEffect>& effects,
+    const std::uint64_t seed) {
+  std::map<std::string, PrevhashEffectAccumulator> grouped;
+  for (const auto& effect : effects) {
+    auto& accumulator = grouped[effect.prevhash];
+    accumulator.sum_rank_biserial += effect.rank_biserial;
+    accumulator.sum_ks += effect.ks;
+    ++accumulator.count;
+  }
+  std::vector<PrevhashEffectAccumulator> compact;
+  compact.reserve(grouped.size());
+  for (const auto& [unused, accumulator] : grouped) compact.push_back(accumulator);
+  return aggregate_accumulator_cells(compact, seed);
 }
 
 nlohmann::json feature_schema_json() {
   auto features = nlohmann::json::array();
   for (const auto& name : trajectory_feature_names()) {
+    const auto exact_carry = name.ends_with("_carry_count") ||
+        name.ends_with("_maximum_chain") || name.ends_with("_chain_count") ||
+        name.ends_with("_carry_mask_popcount");
     std::string family = name.rfind("state_", 0U) == 0U ? "STATE_BEFORE" :
-        (name.find("carry_") != std::string::npos || name.find("chain_") != std::string::npos
-          ? "EXACT_CARRIES" : "ROUND_VARIABLE");
+        (exact_carry ? "EXACT_CARRIES" : "ROUND_VARIABLE");
     features.push_back({{"name", name}, {"family", family},
                         {"normalization", name.find("normalized") != std::string::npos
                             ? "uint32 / 4294967295" : "none"}});
@@ -938,6 +959,20 @@ nlohmann::json feature_schema_json() {
 }
 
 }  // namespace
+
+void accumulate_effect(PrevhashEffectAccumulator& accumulator,
+                       const double rank_biserial_value,
+                       const double ks) {
+  accumulator.sum_rank_biserial += rank_biserial_value;
+  accumulator.sum_ks += ks;
+  ++accumulator.count;
+}
+
+AggregateEffectSummary aggregate_prevhash_effects(
+    const std::vector<PrevhashEffectAccumulator>& accumulators,
+    const std::uint64_t bootstrap_seed) {
+  return aggregate_accumulator_cells(accumulators, bootstrap_seed);
+}
 
 nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
   const auto analysis_started = std::chrono::steady_clock::now();
@@ -968,7 +1003,24 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
       std::pair{0U,4U}, std::pair{1U,4U}, std::pair{2U,4U}, std::pair{3U,4U}, std::pair{0U,3U}};
   const std::unordered_map<std::string, std::size_t> cohort_index{
       {"EXTREME",0U}, {"VERY_GOOD",1U}, {"GOOD",2U}, {"T20_CONTROL",3U}, {"RANDOM_CONTROL",4U}};
-  std::vector<std::vector<BjeEffect>> effects(comparison_count * round_count * names.size());
+  std::set<std::string> discovery_prevhash_set;
+  for (const auto& block : manifest.at("blocks")) {
+    if (block.at("partition").get<std::string>() == "discovery") {
+      discovery_prevhash_set.insert(
+          block.at("stratum_job").at("prevhash").get<std::string>());
+    }
+  }
+  const std::vector<std::string> discovery_prevhashes(
+      discovery_prevhash_set.begin(), discovery_prevhash_set.end());
+  std::unordered_map<std::string, std::size_t> prevhash_index;
+  for (std::size_t i = 0; i < discovery_prevhashes.size(); ++i) {
+    prevhash_index.emplace(discovery_prevhashes[i], i);
+  }
+  const auto effect_cell_count = comparison_count * round_count * names.size();
+  // Cell-major dense storage: all compact prevhash accumulators for a given
+  // comparison/round/feature cell are contiguous.
+  std::vector<PrevhashEffectAccumulator> effects(
+      effect_cell_count * discovery_prevhashes.size());
   nlohmann::json anomalies = nlohmann::json::array();
   nlohmann::json order_aggregate = nlohmann::json::array();
   struct OrderEntry { std::string prevhash; double observed{}, null_mean{}; };
@@ -982,6 +1034,7 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
     require(capture_is_complete(directory, block), "discovery capture is incomplete or invalid: " + block.at("block_id").get<std::string>());
     const auto id = block.at("block_id").get<std::string>();
     const auto prevhash = block.at("stratum_job").at("prevhash").get<std::string>();
+    const auto compact_prevhash = prevhash_index.at(prevhash);
     auto header = block_header(block);
     const auto nonces = read_capture(directory / "captures" / (id + ".t20.bin"));
     const auto sorted = reconstruct_and_sort(header, nonces, kProductionThresholdBits, true);
@@ -1052,9 +1105,11 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
         for (std::size_t feature = 0; feature < names.size(); ++feature) {
           const auto cell = round * names.size() + feature;
           if (values[left][cell].empty() || values[right][cell].empty()) continue;
-          effects[(comparison * round_count + round) * names.size() + feature].push_back(
-              {prevhash, rank_biserial(values[left][cell], values[right][cell]),
-               ks_distance(values[left][cell], values[right][cell])});
+          const auto flat = (comparison * round_count + round) * names.size() + feature;
+          auto& accumulator = effects[flat * discovery_prevhashes.size() + compact_prevhash];
+          accumulate_effect(accumulator,
+              rank_biserial(values[left][cell], values[right][cell]),
+              ks_distance(values[left][cell], values[right][cell]));
         }
       }
     }
@@ -1066,7 +1121,7 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
     std::map<std::string, std::vector<OrderEntry>> grouped;
     for (const auto& entry : order_entries[metric]) grouped[entry.prevhash].push_back(entry);
     std::vector<double> observed_by_prevhash, null_by_prevhash;
-    std::vector<BjeEffect> differences;
+    std::vector<GroupedScalarEffect> differences;
     for (const auto& [prevhash, entries] : grouped) {
       std::vector<double> observed_values, null_values;
       for (const auto& entry : entries) {
@@ -1077,13 +1132,14 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
       null_by_prevhash.push_back(mean(null_values));
       differences.push_back({prevhash, mean(observed_values) - mean(null_values), 0.0});
     }
-    const auto aggregate = aggregate_effects(differences,
+    const auto aggregate = aggregate_grouped_scalar_effects(differences,
         derived_seed(seed, "Y_ORDER_GLOBAL:" + metric_names[metric]));
     order_global.push_back({{"metric", metric_names[metric]}, {"prevhash_count", grouped.size()},
         {"bje_count", order_entries[metric].size()}, {"mean_observed_by_prevhash", mean(observed_by_prevhash)},
         {"mean_null_by_prevhash", mean(null_by_prevhash)},
-        {"mean_observed_minus_null", aggregate.mean_rank},
-        {"bootstrap_ci_low", aggregate.ci_low}, {"bootstrap_ci_high", aggregate.ci_high},
+        {"mean_observed_minus_null", aggregate.mean_rank_biserial},
+        {"bootstrap_ci_low", aggregate.bootstrap_ci_low},
+        {"bootstrap_ci_high", aggregate.bootstrap_ci_high},
         {"bootstrap_unit", "complete_prevhash"}});
   }
   checkpoint::StateStore(analysis / "input_y_order_summary.json").save({
@@ -1106,19 +1162,26 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory) {
       std::string maximum_feature;
       for (std::size_t feature = 0; feature < names.size(); ++feature) {
         const auto flat = (comparison * round_count + round) * names.size() + feature;
-        const auto aggregate = aggregate_effects(effects[flat], derived_seed(seed, std::to_string(flat)));
+        const auto cell_begin = discovery_prevhashes.empty()
+            ? static_cast<const PrevhashEffectAccumulator*>(nullptr)
+            : effects.data() + flat * discovery_prevhashes.size();
+        const auto aggregate = aggregate_accumulator_cells(
+            std::span<const PrevhashEffectAccumulator>(cell_begin, discovery_prevhashes.size()),
+            derived_seed(seed, std::to_string(flat)));
         const auto pass = round < 128U ? 1U : 2U;
         const auto compression = round < 128U ? round / 64U : 0U;
         const auto local = round % 64U;
         csv_row(contrast_csv, {std::to_string(round), std::to_string(pass), std::to_string(compression),
             std::to_string(local), names[feature], comparison_names[comparison],
             std::to_string(aggregate.prevhash_count), std::to_string(aggregate.bje_count),
-            std::to_string(aggregate.mean_rank), std::to_string(aggregate.median_rank),
-            std::to_string(aggregate.ci_low), std::to_string(aggregate.ci_high),
+            std::to_string(aggregate.mean_rank_biserial),
+            std::to_string(aggregate.median_rank_biserial),
+            std::to_string(aggregate.bootstrap_ci_low),
+            std::to_string(aggregate.bootstrap_ci_high),
             std::to_string(aggregate.mean_ks)});
-        if (std::abs(aggregate.mean_rank) > maximum_abs) {
-          maximum_abs = std::abs(aggregate.mean_rank);
-          maximum_value = aggregate.mean_rank;
+        if (std::abs(aggregate.mean_rank_biserial) > maximum_abs) {
+          maximum_abs = std::abs(aggregate.mean_rank_biserial);
+          maximum_value = aggregate.mean_rank_biserial;
           maximum_feature = names[feature];
         }
       }

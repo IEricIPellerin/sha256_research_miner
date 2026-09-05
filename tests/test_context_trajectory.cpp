@@ -5,9 +5,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <numeric>
+#include <random>
 #include <set>
 
 namespace trajectory = srm::research::context_trajectory;
@@ -244,6 +247,73 @@ TEST_CASE("resume does not rescan a checksum-valid complete BJE") {
   std::filesystem::remove_all(root);
 }
 
+TEST_CASE("incomplete resume rejects a changed frozen kernel before GPU access") {
+  const auto root = unique_temp("srm_trajectory_kernel_guard");
+  std::filesystem::create_directories(root);
+  const auto kernel_a = root / "kernel_a.cl";
+  const auto kernel_b = root / "kernel_b.cl";
+  { std::ofstream output(kernel_a); output << "kernel A\n"; }
+  { std::ofstream output(kernel_b); output << "kernel B\n"; }
+  const auto id = std::string(64U, 'c');
+  srm::checkpoint::StateStore(root / "manifest.json").save({
+      {"experiment", "PHASE_3_POST_SCAN_Y_SORT_TRAJECTORY"}, {"campaign_id", "traj_kernel_guard"},
+      {"capture", {{"threshold_bits", 20}}}, {"planned_bje", 1},
+      {"kernel", {{"sha256", trajectory::file_sha256(kernel_a)}}},
+      {"blocks", nlohmann::json::array({{{"block_id", id}, {"partition", "validation"}}})}});
+  srm::checkpoint::StateStore(root / "checkpoint.json").save({{"status", "RUNNING"}});
+  REQUIRE(throws_with([&] {
+    (void)trajectory::resume_campaign(root, kernel_b, "GPU must not be opened", 64U);
+  }, "OpenCL kernel SHA-256 differs from frozen manifest"));
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("compact prevhash effects equal the legacy BJE grouped definition") {
+  struct LegacyEffect { std::size_t prevhash; double rank; double ks; };
+  const std::vector<LegacyEffect> legacy{
+      {0U, 0.2, 0.1}, {0U, 0.4, 0.3},
+      {1U, -0.5, 0.4},
+      {2U, 0.1, 0.2}, {2U, 0.7, 0.6}, {2U, 0.4, 0.1}};
+  std::vector<trajectory::PrevhashEffectAccumulator> compact(3U);
+  for (const auto& effect : legacy)
+    trajectory::accumulate_effect(compact[effect.prevhash], effect.rank, effect.ks);
+  const std::uint64_t seed = 0x12345678U;
+  const auto observed = trajectory::aggregate_prevhash_effects(compact, seed);
+
+  std::vector<double> legacy_rank, legacy_ks;
+  for (std::size_t prevhash = 0; prevhash < compact.size(); ++prevhash) {
+    double sum_rank = 0.0, sum_ks = 0.0;
+    std::size_t count = 0U;
+    for (const auto& effect : legacy) if (effect.prevhash == prevhash) {
+      sum_rank += effect.rank; sum_ks += effect.ks; ++count;
+    }
+    legacy_rank.push_back(sum_rank / count);
+    legacy_ks.push_back(sum_ks / count);
+  }
+  const auto legacy_mean = [](const std::vector<double>& values) {
+    return std::accumulate(values.begin(), values.end(), 0.0) / values.size();
+  };
+  auto sorted_rank = legacy_rank;
+  std::sort(sorted_rank.begin(), sorted_rank.end());
+  std::mt19937_64 rng(seed);
+  std::uniform_int_distribution<std::size_t> choose(0U, legacy_rank.size() - 1U);
+  std::vector<double> bootstrap;
+  for (std::size_t replicate = 0; replicate < trajectory::kBootstrapReplicates; ++replicate) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < legacy_rank.size(); ++i) sum += legacy_rank[choose(rng)];
+    bootstrap.push_back(sum / legacy_rank.size());
+  }
+  std::sort(bootstrap.begin(), bootstrap.end());
+  REQUIRE_EQ(observed.prevhash_count, 3U);
+  REQUIRE_EQ(observed.bje_count, legacy.size());
+  REQUIRE(std::abs(observed.mean_rank_biserial - legacy_mean(legacy_rank)) < 1e-15);
+  REQUIRE(std::abs(observed.median_rank_biserial - sorted_rank[1]) < 1e-15);
+  REQUIRE(std::abs(observed.mean_ks - legacy_mean(legacy_ks)) < 1e-15);
+  REQUIRE_EQ(observed.bootstrap_ci_low,
+      bootstrap[static_cast<std::size_t>(0.025 * (bootstrap.size() - 1U))]);
+  REQUIRE_EQ(observed.bootstrap_ci_high,
+      bootstrap[static_cast<std::size_t>(0.975 * (bootstrap.size() - 1U))]);
+}
+
 TEST_CASE("validation and holdout BJE export and trace are sealed") {
   for (const auto* partition : {"validation", "holdout"}) {
     const auto root = unique_temp(std::string("srm_trajectory_guard_") + partition);
@@ -272,6 +342,21 @@ TEST_CASE("trajectory analysis reads discovery only and leaves sealed partitions
   REQUIRE(!summary.at("validation_opened").get<bool>());
   REQUIRE(!summary.at("holdout_opened").get<bool>());
   REQUIRE(std::filesystem::exists(root / "analysis_discovery_v1" / "selected_bjen.csv"));
+  const auto schema = srm::checkpoint::StateStore(
+      root / "analysis_discovery_v1" / "trajectory_feature_schema.json").load_or({});
+  std::map<std::string, std::string> families;
+  for (const auto& feature : schema.at("features")) {
+    families.emplace(feature.at("name").get<std::string>(),
+                     feature.at("family").get<std::string>());
+  }
+  std::size_t exact_carry_count = 0U;
+  for (const auto* addition : {"T1", "T2", "new_e", "new_a"}) {
+    for (const auto* suffix : {"carry_count", "maximum_chain", "chain_count", "carry_mask_popcount"}) {
+      REQUIRE_EQ(families.at(std::string(addition) + '_' + suffix), "EXACT_CARRIES");
+      ++exact_carry_count;
+    }
+  }
+  REQUIRE_EQ(exact_carry_count, 16U);
   std::filesystem::remove_all(root);
 }
 

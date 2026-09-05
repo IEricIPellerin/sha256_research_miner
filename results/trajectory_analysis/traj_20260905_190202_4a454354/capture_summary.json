@@ -1,0 +1,156 @@
+{
+  "baseline_estimated_seconds": 41.8611712,
+  "campaign_id": "traj_20260905_190202_4a454354",
+  "captures": [
+    {
+      "block_id": "a233de5a97ceb321c40ff8beab4df53d24b8b883dc69e3bb31ec97f96a41eff0",
+      "capture_sha256": "c9301e8881364160eaed20deead3e679ae0473384e5ce7e8e12c9ace281a1acb",
+      "cpu_verify_seconds": 0.0030426,
+      "observed_t20_count": 4142,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3534244
+    },
+    {
+      "block_id": "ac12bcce4e1ea38b16aeb3790af56dabbe3c1c1be8765c0d548d4605c8a39d59",
+      "capture_sha256": "9cec68ae741c13273f6178887fc23fd360f27482790b50140bddaf6efcdeb864",
+      "cpu_verify_seconds": 0.0027806,
+      "observed_t20_count": 3983,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3570755
+    },
+    {
+      "block_id": "29b1aa1184808c923f0c6dfa02780b8c4dc00580a176241202db443cd714cb16",
+      "capture_sha256": "1b153a95cb0df1cbb5d209efdc2dfd74561a013c7ba8d658d03c1213daeeac43",
+      "cpu_verify_seconds": 0.0029862,
+      "observed_t20_count": 4080,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3503548
+    },
+    {
+      "block_id": "c0c363e05be7e6508fa822f403bca427ed54324694c243b24204117e96247f59",
+      "capture_sha256": "e97c314435404cb22aeeb6ac84b0fca84bba16e9997316561bc8718f86cc5075",
+      "cpu_verify_seconds": 0.0028231,
+      "observed_t20_count": 4087,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.35752
+    },
+    {
+      "block_id": "2644cc2f3716b2b392fdc4323c27b0742070d628f91d6115901736b561982570",
+      "capture_sha256": "5d50a4d4a465439289c41a3b80f2ab9bdd6730ba50fd71851e2e0d4b45efbf8a",
+      "cpu_verify_seconds": 0.0029396,
+      "observed_t20_count": 4082,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3568736
+    },
+    {
+      "block_id": "db89e5d5ae55624f6678dda086a8935c2cdfe1c2c50369a476988f8f90ca5ddb",
+      "capture_sha256": "e5e05e70cbe6759aa2f22b38015078325449930f0be9bac867bcd48f61fe4981",
+      "cpu_verify_seconds": 0.0029487,
+      "observed_t20_count": 4043,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3537563
+    },
+    {
+      "block_id": "59d1391e1a02b496d5c2fea62cf2a4fa6484e6900a84a04fd200a850722f4ff8",
+      "capture_sha256": "7b2c16ccf3b3efe9c8b1d2e9b18cedd9e7d01e65b22b8244d209aa8c7a0fac9a",
+      "cpu_verify_seconds": 0.0029771,
+      "observed_t20_count": 4132,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3529123
+    },
+    {
+      "block_id": "cc5fdb7b6a295f1914c22696941902df6dd08916236d6f05bbbc27e2e7a5b89e",
+      "capture_sha256": "62c6679af1c28bb788edec9033fcb4d0954c84da93c64379ce4ce48022543b25",
+      "cpu_verify_seconds": 0.0031898,
+      "observed_t20_count": 4042,
+      "overflow_retries": 0,
+      "partition": "discovery",
+      "scan_seconds": 2.3613158
+    },
+    {
+      "block_id": "d8eda44d0fac17d2eb80a950460c303d4b2372714027f8edd9f246d9a3489ab2",
+      "capture_sha256": "3d3bfe70b2bbae9d501abf895000a24a3e2015ece815b4e5e4ec88a482b6dd74",
+      "cpu_verify_seconds": 0.0036462,
+      "observed_t20_count": 4153,
+      "overflow_retries": 0,
+      "partition": "holdout",
+      "scan_seconds": 2.3850703
+    },
+    {
+      "block_id": "ecc4457b75546f48481f64d80128b982e82f875a6e65873f1eaea5601f9dc297",
+      "capture_sha256": "5446e4333286a87cc027fd4393755980fd583859a6bd86bc2eae9dc9233f6fb9",
+      "cpu_verify_seconds": 0.0033578,
+      "observed_t20_count": 4182,
+      "overflow_retries": 0,
+      "partition": "holdout",
+      "scan_seconds": 2.3807616
+    },
+    {
+      "block_id": "0cb2852ee8f65004837e336952d9388e579a7483f0dd465f648dbc3f77b4377f",
+      "capture_sha256": "68fdbd31782e6df156a178b764d80d98c8c46bbdb22aac098f9e37a26a64fb94",
+      "cpu_verify_seconds": 0.0029061,
+      "observed_t20_count": 4083,
+      "overflow_retries": 0,
+      "partition": "holdout",
+      "scan_seconds": 2.3752131
+    },
+    {
+      "block_id": "d19b2e2e8298b4dd773b7c2e5bc3fafd10c6c9a3af5ccb2e77e27aca8cd9fa45",
+      "capture_sha256": "ea97d990587eecf4ebc7452e324315a158af9174d6fa9dff94e09dc69536c21f",
+      "cpu_verify_seconds": 0.0031743,
+      "observed_t20_count": 4052,
+      "overflow_retries": 0,
+      "partition": "holdout",
+      "scan_seconds": 2.3787375
+    },
+    {
+      "block_id": "006dd975c0be3a6939e62894b642933109dda1363c1f1d43b17c6f48ba332bbc",
+      "capture_sha256": "f8975e071360635213eb5b4e94c540e41e8fabe4b9916fe97ac34363dd08390b",
+      "cpu_verify_seconds": 0.0028957,
+      "observed_t20_count": 4033,
+      "overflow_retries": 0,
+      "partition": "validation",
+      "scan_seconds": 2.3720322
+    },
+    {
+      "block_id": "ce419abb2ee334738cd92df3326fc2be106a2d37ac2a868f9e1f5a14c1d16bab",
+      "capture_sha256": "e2ec4acb03a5ab31707118fd1b512eeef0ecf805db79b787e2dbb0a93863d0e3",
+      "cpu_verify_seconds": 0.0029642,
+      "observed_t20_count": 4136,
+      "overflow_retries": 0,
+      "partition": "validation",
+      "scan_seconds": 2.3605958
+    },
+    {
+      "block_id": "7e1acffb08523b7003c79068e284eb4047b510086ee60b89f13256ee23dfa3d9",
+      "capture_sha256": "8278947eafc508f08ab3642e134845ed976ac5db424846739e865ad6c7ff30e1",
+      "cpu_verify_seconds": 0.0029858,
+      "observed_t20_count": 4138,
+      "overflow_retries": 0,
+      "partition": "validation",
+      "scan_seconds": 2.3482696
+    },
+    {
+      "block_id": "cca52d971bbd8dd6ba9a74443cc8a9a7d2b93d257ca8496a6380ec3fd52e4353",
+      "capture_sha256": "6e41df49deb7ae2d03272521642baac6580e258841f2b7fc5733bcc2b3b9b499",
+      "cpu_verify_seconds": 0.0028723,
+      "observed_t20_count": 4088,
+      "overflow_retries": 0,
+      "partition": "validation",
+      "scan_seconds": 2.3657618
+    }
+  ],
+  "complete_captures": 16,
+  "cpu_verify_seconds": 0.048490099999999994,
+  "scan_seconds": 37.8096746,
+  "schema_version": 1,
+  "sparse_hit_count": 65456,
+  "sparse_overhead_ratio": -0.09678411959959687
+}

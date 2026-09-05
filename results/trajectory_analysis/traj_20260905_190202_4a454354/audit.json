@@ -1,0 +1,9 @@
+{
+  "campaign_id": "traj_20260905_190202_4a454354",
+  "holdout_opened": false,
+  "phase2_outputs_modified": false,
+  "phase2_scores_used_for_selection": false,
+  "schema_version": 1,
+  "scientific_status": "DISCOVERY_EXPLORATORY_NOT_VALIDATED",
+  "validation_opened": false
+}

@@ -1,0 +1,318 @@
+{
+  "bit_transitions": "popcount((x XOR (x >> 1)) AND 0x7fffffff)",
+  "carry_model": "exact integer bit-column carry; mask set when carry_out is nonzero",
+  "features": [
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_a_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_a_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_a_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_b_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_b_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_b_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_c_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_c_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_c_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_d_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_d_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_d_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_e_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_e_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_e_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_f_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_f_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_f_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_g_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_g_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_g_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_h_before_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_h_before_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "STATE_BEFORE",
+      "name": "state_h_before_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "W_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "W_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "W_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma0_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma0_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma0_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma1_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma1_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Sigma1_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Ch_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Ch_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Ch_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Maj_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Maj_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "Maj_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T1_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T1_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T1_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T2_normalized",
+      "normalization": "uint32 / 4294967295"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T2_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T2_bit_transitions",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T1_carry_count",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T1_maximum_chain",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T1_chain_count",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T1_carry_mask_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T2_carry_count",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "T2_maximum_chain",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T2_chain_count",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "T2_carry_mask_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_e_carry_count",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "new_e_maximum_chain",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_e_chain_count",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_e_carry_mask_popcount",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_a_carry_count",
+      "normalization": "none"
+    },
+    {
+      "family": "ROUND_VARIABLE",
+      "name": "new_a_maximum_chain",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_a_chain_count",
+      "normalization": "none"
+    },
+    {
+      "family": "EXACT_CARRIES",
+      "name": "new_a_carry_mask_popcount",
+      "normalization": "none"
+    }
+  ],
+  "global_round_mapping": {
+    "0..63": "first SHA-256 compression 0",
+    "128..191": "second SHA-256 compression 0",
+    "64..127": "first SHA-256 compression 1"
+  },
+  "round_count": 192,
+  "schema_version": 1
+}

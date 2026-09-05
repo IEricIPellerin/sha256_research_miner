@@ -1,0 +1,10 @@
+{
+  "campaign_id": "traj_20260905_190202_4a454354",
+  "checkpoint_count": 16,
+  "completed_bje": 16,
+  "last_completed_block_id": "cca52d971bbd8dd6ba9a74443cc8a9a7d2b93d257ca8496a6380ec3fd52e4353",
+  "schema_version": 1,
+  "status": "COMPLETE",
+  "total_bje": 16,
+  "updated_at_utc": "2026-09-05T19:02:40.670Z"
+}

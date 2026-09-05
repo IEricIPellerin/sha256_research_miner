@@ -1977,7 +1977,15 @@ struct SelectionAwarePermutationArtifacts {
 
 SelectionAwarePermutationArtifacts selection_aware_permutation_analysis(
     const std::vector<Row>& rows, const std::vector<SchemaEntry>& schema,
-    const Options& options) {
+    const Options& options, const ModelTarget target_kind) {
+  require(target_kind == ModelTarget::ContextQualityScore ||
+              target_kind == ModelTarget::ContextT30Score,
+          "selection-aware permutation requires an intra-context rank target");
+
+  const std::string target_name =
+      target_kind == ModelTarget::ContextT30Score
+          ? "context_t30_score"
+          : "context_quality_score";
   struct ContextUnit {
     std::vector<std::size_t> rows;
     double prevhash_weight{};
@@ -2049,7 +2057,9 @@ SelectionAwarePermutationArtifacts selection_aware_permutation_analysis(
 
   std::vector<double> observed_response;
   observed_response.reserve(rows.size());
-  for (const auto& row : rows) observed_response.push_back(row.context_quality_score);
+  for (const auto& row : rows) {
+    observed_response.push_back(model_response(row, target_kind));
+  }
   auto observed_scores = score_all_features(observed_response);
   const auto observed_scientific = maximum_for_family(observed_scores, false);
   const auto observed_sanity = maximum_for_family(observed_scores, true);
@@ -2109,7 +2119,7 @@ SelectionAwarePermutationArtifacts selection_aware_permutation_analysis(
       {"schema_version", kSchemaVersion},
       {"phase", "2A_REFINEMENT_DISCOVERY_ONLY"},
       {"branch", "SELECTION_AWARE_MAX_STATISTIC"},
-      {"target", "context_quality_score"},
+      {"target", target_name},
       {"target_source_stage", "POST_SCAN_Y_ONLY"},
       {"target_in_feature_matrix", false},
       {"seed", options.seed},
@@ -2556,6 +2566,7 @@ std::string refinement_report_markdown(
     const LoadedData& data, const CvArtifacts& refined_rank_cv,
     const CvArtifacts& t30_cv,
     const SelectionAwarePermutationArtifacts& selection_aware,
+    const SelectionAwarePermutationArtifacts& t30_selection_aware,
     const TopkArtifacts& refined_rank_topk,
     const TopkArtifacts& t30_topk, const Options& options) {
   std::set<std::string> contexts, prevhashes;
@@ -2596,6 +2607,11 @@ std::string refinement_report_markdown(
          << " admissible scientific feature scores, reselects the maximum absolute mean-prevhash "
             "intra-context Spearman statistic, and compares the observed winner with that null of maxima. "
             "SANITY_BASELINE controls are evaluated separately.\n\n"
+         << "Quality max-stat p-value: `"
+         << selection_aware.summary.at("selection_aware_max_statistic_p_value")
+         << "`. T30 max-stat p-value: `"
+         << t30_selection_aware.summary.at("selection_aware_max_statistic_p_value")
+         << "`.\n\n"
          << "## Interpretation\n\n"
          << "All outputs are **DISCOVERY / EXPLORATORY / NOT VALIDATED**. They are not evidence of "
             "a cryptanalytic weakness or mining advantage. No validation recipe is frozen or chosen "
@@ -2939,7 +2955,7 @@ nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
   prepare_context_feature_ranks(data.rows);
   std::cout << "Phase 2A refinement: selection-aware max-statistic permutation\n";
   const auto selection_aware = selection_aware_permutation_analysis(
-      data.rows, data.schema, options);
+      data.rows, data.schema, options, ModelTarget::ContextQualityScore);
   std::cout << "Phase 2A refinement: expanded-lambda quality-rank grouped CV\n";
   const auto refined_rank_cv = grouped_nested_cv(
       data.rows, data.schema, options, ModelTarget::ContextQualityScore,
@@ -2954,6 +2970,11 @@ nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
   const auto t30_features = primary_feature_analysis(
       data.rows, data.schema, options, ModelTarget::ContextT30Score,
       "EXPLORATORY_DISCOVERY_T30_NOT_VALIDATED");
+
+  std::cout << "Phase 2A refinement: EXPLORATORY_DISCOVERY_T30 selection-aware max-statistic permutation\n";
+  const auto t30_selection_aware = selection_aware_permutation_analysis(
+      data.rows, data.schema, options, ModelTarget::ContextT30Score);
+
   std::cout << "Phase 2A refinement: EXPLORATORY_DISCOVERY_T30 grouped CV\n";
   const auto t30_cv = grouped_nested_cv(
       data.rows, data.schema, options, ModelTarget::ContextT30Score,
@@ -3001,6 +3022,10 @@ nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
       {"selection_aware_permutation", {
           {"target", "context_quality_score"},
           {"selection_refit_inside_each_permutation", true},
+          {"status", "DISCOVERY_EXPLORATORY_NOT_VALIDATED"}}},
+      {"t30_selection_aware_permutation", {
+          {"target", "context_t30_score"},
+          {"selection_refit_inside_each_permutation", true},
           {"status", "DISCOVERY_EXPLORATORY_NOT_VALIDATED"}}}};
   audit["artifacts"] = {
       "audit.json", "feature_schema.json",
@@ -3011,7 +3036,10 @@ nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
       "t30_grouped_cv_summary.json", "t30_grouped_cv_predictions.csv",
       "t30_topk_lift_intra_context.csv",
       "selection_aware_permutation_summary.json",
-      "selection_aware_permutation_null.csv", "report.md"};
+      "selection_aware_permutation_null.csv",
+      "t30_selection_aware_permutation_summary.json",
+      "t30_selection_aware_permutation_null.csv",
+      "report.md"};
   audit["artifacts_written"] = audit.at("artifacts").size();
 
   require(std::filesystem::create_directory(output_directory),
@@ -3033,10 +3061,14 @@ nlohmann::json run_refinement(const std::filesystem::path& campaign_directory,
              selection_aware.summary);
   write_text(output_directory / "selection_aware_permutation_null.csv",
              selection_aware.null_csv);
+  write_json(output_directory / "t30_selection_aware_permutation_summary.json",
+            t30_selection_aware.summary);
+  write_text(output_directory / "t30_selection_aware_permutation_null.csv",
+            t30_selection_aware.null_csv);
   write_text(output_directory / "report.md",
-             refinement_report_markdown(data, refined_rank_cv, t30_cv,
-                                        selection_aware, refined_rank_topk,
-                                        t30_topk, options));
+            refinement_report_markdown(data, refined_rank_cv, t30_cv,
+                          selection_aware, t30_selection_aware,
+                          refined_rank_topk, t30_topk, options));
   write_json(output_directory / "audit.json", audit);
   std::cout << "Phase 2A refinement total: " << std::fixed
             << std::setprecision(3)

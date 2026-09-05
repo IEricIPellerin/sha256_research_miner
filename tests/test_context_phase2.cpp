@@ -535,14 +535,30 @@ TEST_CASE("Phase 2 refinement keeps T30 Y-only and all nested selection train-on
   REQUIRE(permutation.at("max_statistic_includes_all_admissible_features").get<bool>());
   REQUIRE(permutation.at("sanity_baseline_excluded_from_scientific_candidates").get<bool>());
   REQUIRE_EQ(permutation.at("admissible_scientific_feature_count").get<std::size_t>(),
-             audit.at("derived_feature_count").get<std::size_t>() - 4U);
+            audit.at("derived_feature_count").get<std::size_t>() - 4U);
   REQUIRE_EQ(permutation.at("features_scored_per_permutation").get<std::size_t>(),
-             audit.at("derived_feature_count").get<std::size_t>());
+            audit.at("derived_feature_count").get<std::size_t>());
   const auto permutation_null = read_all(
       output / "selection_aware_permutation_null.csv");
   REQUIRE_EQ(static_cast<std::size_t>(std::count(
-                 permutation_null.begin(), permutation_null.end(), '\n')),
-             options.permutation_replicates + 1U);
+                permutation_null.begin(), permutation_null.end(), '\n')),
+            options.permutation_replicates + 1U);
+
+  const auto t30_permutation = nlohmann::json::parse(
+      read_all(output / "t30_selection_aware_permutation_summary.json"));
+
+  REQUIRE_EQ(t30_permutation.at("target").get<std::string>(),
+            "context_t30_score");
+  REQUIRE(t30_permutation.at("selection_refit_inside_each_permutation").get<bool>());
+  REQUIRE(t30_permutation.at("feature_scores_recomputed_inside_each_permutation").get<bool>());
+  REQUIRE(t30_permutation.at("max_statistic_includes_all_admissible_features").get<bool>());
+  REQUIRE(!t30_permutation.at("target_in_feature_matrix").get<bool>());
+
+  const auto t30_permutation_null = read_all(
+      output / "t30_selection_aware_permutation_null.csv");
+  REQUIRE_EQ(static_cast<std::size_t>(std::count(
+                t30_permutation_null.begin(), t30_permutation_null.end(), '\n')),
+            options.permutation_replicates + 1U);
 
   bool overwrite_rejected = false;
   try {

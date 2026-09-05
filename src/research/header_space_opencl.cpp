@@ -214,8 +214,10 @@ struct GpuScanner::Impl {
   cl_command_queue queue{};
   cl_program program{};
   cl_kernel kernel{};
+  cl_kernel sparse_kernel{};
 
   ~Impl() {
+    if (sparse_kernel) clReleaseKernel(sparse_kernel);
     if (kernel) clReleaseKernel(kernel);
     if (program) clReleaseProgram(program);
     if (queue) clReleaseCommandQueue(queue);
@@ -265,6 +267,8 @@ GpuScanner::GpuScanner(std::string device_selector,
   }
   impl_->kernel = clCreateKernel(impl_->program, "map_header_space_zones", &error);
   cl_require(error, "clCreateKernel map_header_space_zones");
+  impl_->sparse_kernel = clCreateKernel(impl_->program, "capture_sparse_hits", &error);
+  cl_require(error, "clCreateKernel capture_sparse_hits");
   std::size_t kernel_max_workgroup = 0;
   cl_require(clGetKernelWorkGroupInfo(impl_->kernel, impl_->device, CL_KERNEL_WORK_GROUP_SIZE,
                                       sizeof(kernel_max_workgroup), &kernel_max_workgroup, nullptr),
@@ -278,6 +282,128 @@ GpuScanner::GpuScanner(std::string device_selector,
   (void)local_size;
   throw std::runtime_error("header-space GPU scanner was built without OpenCL support");
 #endif
+}
+
+SparseHitResult GpuScanner::scan_sparse_hits(const bitcoin::Header& header,
+                                             const std::uint64_t nonce_start,
+                                             const std::uint64_t nonce_count,
+                                             const unsigned threshold_bits,
+                                             const std::size_t capacity) {
+#ifdef SRM_HAS_OPENCL
+  (void)make_zone_layout(nonce_start, nonce_count, nonce_count);
+  if (threshold_bits == 0U || threshold_bits > 256U) {
+    throw std::invalid_argument("threshold_bits must be in [1,256]");
+  }
+  if (capacity == 0U || capacity > std::numeric_limits<cl_uint>::max()) {
+    throw std::invalid_argument("sparse capacity must be in [1,UINT32_MAX]");
+  }
+  cl_int error = CL_SUCCESS;
+  cl_mem prefix_buffer{};
+  cl_mem count_buffer{};
+  cl_mem hits_buffer{};
+  const auto release_buffers = [&] {
+    if (hits_buffer) clReleaseMemObject(hits_buffer);
+    if (count_buffer) clReleaseMemObject(count_buffer);
+    if (prefix_buffer) clReleaseMemObject(prefix_buffer);
+  };
+  try {
+    prefix_buffer = clCreateBuffer(impl_->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                   76U, const_cast<std::uint8_t*>(header.data()), &error);
+    cl_require(error, "sparse prefix buffer");
+    cl_uint zero = 0U;
+    count_buffer = clCreateBuffer(impl_->context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                  sizeof(zero), &zero, &error);
+    cl_require(error, "sparse counter buffer");
+    hits_buffer = clCreateBuffer(impl_->context, CL_MEM_WRITE_ONLY,
+                                 capacity * sizeof(cl_uint), nullptr, &error);
+    cl_require(error, "sparse hits buffer");
+    const cl_ulong start = static_cast<cl_ulong>(nonce_start);
+    const cl_ulong count = static_cast<cl_ulong>(nonce_count);
+    const cl_uint bits = threshold_bits;
+    const cl_uint cap = static_cast<cl_uint>(capacity);
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 0, sizeof(prefix_buffer), &prefix_buffer), "sparse prefix arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 1, sizeof(start), &start), "sparse start arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 2, sizeof(count), &count), "sparse count arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 3, sizeof(bits), &bits), "sparse bits arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 4, sizeof(cap), &cap), "sparse capacity arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 5, sizeof(count_buffer), &count_buffer), "sparse counter arg");
+    cl_require(clSetKernelArg(impl_->sparse_kernel, 6, sizeof(hits_buffer), &hits_buffer), "sparse hits arg");
+
+    const auto preferred_items = std::max<std::size_t>(
+        impl_->requested_local_size,
+        impl_->requested_local_size * std::max<std::uint32_t>(1U, impl_->info.compute_units) * 8U);
+    const auto useful_items = static_cast<std::size_t>(std::min<std::uint64_t>(nonce_count, preferred_items));
+    const auto global_size = ((useful_items + impl_->requested_local_size - 1U) /
+                              impl_->requested_local_size) * impl_->requested_local_size;
+    SparseHitResult result;
+    result.device = impl_->info;
+    result.nonce_count = nonce_count;
+    result.capacity = capacity;
+    result.threshold_bits = threshold_bits;
+    const auto wall_started = std::chrono::steady_clock::now();
+    cl_event event{};
+    cl_require(clEnqueueNDRangeKernel(impl_->queue, impl_->sparse_kernel, 1, nullptr,
+                                      &global_size, &impl_->requested_local_size,
+                                      0, nullptr, &event), "sparse kernel launch");
+    cl_require(clFinish(impl_->queue), "sparse kernel finish");
+    cl_ulong event_start = 0, event_end = 0;
+    if (clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(event_start), &event_start, nullptr) == CL_SUCCESS &&
+        clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END, sizeof(event_end), &event_end, nullptr) == CL_SUCCESS &&
+        event_end >= event_start) {
+      result.kernel_seconds = static_cast<double>(event_end - event_start) * 1e-9;
+    }
+    clReleaseEvent(event);
+    cl_uint total = 0U;
+    cl_require(clEnqueueReadBuffer(impl_->queue, count_buffer, CL_TRUE, 0,
+                                   sizeof(total), &total, 0, nullptr, nullptr), "sparse counter download");
+    result.total_hit_count = total;
+    result.captured_count = std::min<std::size_t>(capacity, total);
+    result.nonces.resize(result.captured_count);
+    if (!result.nonces.empty()) {
+      cl_require(clEnqueueReadBuffer(impl_->queue, hits_buffer, CL_TRUE, 0,
+                                     result.nonces.size() * sizeof(cl_uint), result.nonces.data(),
+                                     0, nullptr, nullptr), "sparse hits download");
+    }
+    result.overflow = result.total_hit_count > result.captured_count;
+    result.elapsed_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - wall_started).count();
+    release_buffers();
+    return result;
+  } catch (...) {
+    release_buffers();
+    throw;
+  }
+#else
+  (void)header; (void)nonce_start; (void)nonce_count; (void)threshold_bits; (void)capacity;
+  throw std::runtime_error("header-space GPU scanner was built without OpenCL support");
+#endif
+}
+
+SparseHitResult GpuScanner::scan_sparse_hits_complete(const bitcoin::Header& header,
+                                                      const std::uint64_t nonce_start,
+                                                      const std::uint64_t nonce_count,
+                                                      const unsigned threshold_bits,
+                                                      const std::size_t initial_capacity) {
+  auto capacity = initial_capacity;
+  std::size_t retries = 0;
+  double elapsed = 0.0, kernel = 0.0;
+  for (;;) {
+    auto result = scan_sparse_hits(header, nonce_start, nonce_count,
+                                   threshold_bits, capacity);
+    elapsed += result.elapsed_seconds;
+    kernel += result.kernel_seconds;
+    if (!result.overflow) {
+      result.overflow_retries = retries;
+      result.elapsed_seconds = elapsed;
+      result.kernel_seconds = kernel;
+      return result;
+    }
+    if (capacity > std::numeric_limits<std::size_t>::max() / 2U) {
+      throw std::overflow_error("sparse capture capacity cannot be doubled");
+    }
+    capacity *= 2U;
+    ++retries;
+  }
 }
 
 GpuScanner::~GpuScanner() = default;

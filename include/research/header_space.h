@@ -97,6 +97,23 @@ struct GpuScanResult {
   double kernel_seconds{0.0};
 };
 
+// Opt-in sparse capture result.  The historical zone scanner above never uses
+// this path.  A one-shot capture may overflow; callers must reject it or retry
+// with a larger capacity.  `nonces` contains only the captured prefix.
+struct SparseHitResult {
+  std::vector<std::uint32_t> nonces;
+  GpuDeviceInfo device;
+  std::uint64_t nonce_count{0};
+  std::uint64_t total_hit_count{0};
+  std::size_t captured_count{0};
+  std::size_t capacity{0};
+  unsigned threshold_bits{0};
+  bool overflow{false};
+  std::size_t overflow_retries{0};
+  double elapsed_seconds{0.0};
+  double kernel_seconds{0.0};
+};
+
 bitcoin::Header genesis_header();
 bitcoin::Header header_from_hex(std::string_view header_hex);
 HeaderMetadata decode_header(const bitcoin::Header& header);
@@ -104,6 +121,8 @@ HeaderMetadata decode_header(const bitcoin::Header& header);
 PowValue pow_value(const crypto::Digest& raw_digest);
 std::string pow_value_hex(const PowValue& value);
 unsigned leading_zero_bits(const PowValue& value);
+// Exact strict predicate Y < 2^(256-threshold_bits).
+bool below_power_of_two_threshold(const PowValue& value, unsigned threshold_bits);
 TailCounts classify_tail(const PowValue& value);
 bool minimum_precedes(const PowValue& left,
                       std::uint32_t left_nonce,
@@ -117,6 +136,16 @@ std::vector<ZoneStats> scan_cpu(const bitcoin::Header& header,
                                 std::uint64_t nonce_start,
                                 std::uint64_t nonce_count,
                                 std::uint64_t zone_size);
+SparseHitResult scan_sparse_hits_cpu(const bitcoin::Header& header,
+                                     std::uint64_t nonce_start,
+                                     std::uint64_t nonce_count,
+                                     unsigned threshold_bits,
+                                     std::size_t capacity);
+SparseHitResult scan_sparse_hits_cpu_complete(const bitcoin::Header& header,
+                                              std::uint64_t nonce_start,
+                                              std::uint64_t nonce_count,
+                                              unsigned threshold_bits,
+                                              std::size_t initial_capacity);
 GlobalStats aggregate_zones(const std::vector<ZoneStats>& zones);
 bool same_statistics(const std::vector<ZoneStats>& left,
                      const std::vector<ZoneStats>& right);
@@ -143,6 +172,16 @@ class GpuScanner {
                      std::uint64_t nonce_count,
                      std::uint64_t zone_size,
                      std::size_t batch_zones);
+  SparseHitResult scan_sparse_hits(const bitcoin::Header& header,
+                                   std::uint64_t nonce_start,
+                                   std::uint64_t nonce_count,
+                                   unsigned threshold_bits,
+                                   std::size_t capacity);
+  SparseHitResult scan_sparse_hits_complete(const bitcoin::Header& header,
+                                            std::uint64_t nonce_start,
+                                            std::uint64_t nonce_count,
+                                            unsigned threshold_bits,
+                                            std::size_t initial_capacity);
 
  private:
   struct Impl;

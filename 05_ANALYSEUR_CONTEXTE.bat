@@ -32,6 +32,8 @@ echo [7] Smoke test tres court
 echo [8] Resume du corpus Stratum
 echo [9] PHASE 2 - ranking intra-contexte (DISCOVERY seulement)
 echo [10] PHASE 2 REFINEMENT - ridge/T30/max-stat (DISCOVERY seulement)
+echo [11] PHASE 3 - T20 / Y-SORT / TRAJECTOIRES
+echo [12] Reprendre la derniere campagne PHASE 3
 echo [0] Quitter
 echo.
 set /p "CHOICE=Choix: "
@@ -46,6 +48,8 @@ if "%CHOICE%"=="7" "%ANALYZER%" smoke --benchmark-nonces 1048576 --smoke-nonces 
 if "%CHOICE%"=="8" "%ANALYZER%" corpus & goto done
 if "%CHOICE%"=="9" goto phase2
 if "%CHOICE%"=="10" goto phase2refinement
+if "%CHOICE%"=="11" goto phase3
+if "%CHOICE%"=="12" "%ANALYZER%" trajectory-resume & goto done
 if "%CHOICE%"=="0" exit /b 0
 echo Choix invalide.
 pause
@@ -81,6 +85,32 @@ set /p "CONFIRM2R=Confirmer le refinement discovery [O/N]: "
 if /i "%CONFIRM2R%"=="O" "%ANALYZER%" phase2-refinement --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
 if /i "%CONFIRM2R%"=="OUI" "%ANALYZER%" phase2-refinement --campaign results\context_analysis\ctx_20260904_165537_41323536 --yes
 goto done
+
+:phase3
+echo.
+echo MODE: PHASE 3 POST_SCAN TRAJECTORY
+echo BJE = espace complet de 2^32 nonces
+echo Seuil capture: T20
+echo Stockage des 2^32 hashes: NON
+echo Capture GPU: nonces T20 seulement
+echo Analyse auto: DISCOVERY seulement
+echo Validation: SCELLEE
+echo Holdout: SCELLE
+echo Phase 2 historique modifiee: NON
+echo.
+set "BJE_COUNT="
+set /p "BJE_COUNT=Nombre de B(J,e) a scanner [16]: "
+if not defined BJE_COUNT set "BJE_COUNT=16"
+for /f "delims=0123456789" %%A in ("%BJE_COUNT%") do if not "%%A"=="" goto phase3invalid
+set /a BJE_NUMBER=%BJE_COUNT% 2>nul
+if %BJE_NUMBER% LEQ 0 goto phase3invalid
+"%ANALYZER%" trajectory-new --bje %BJE_COUNT%
+goto done
+
+:phase3invalid
+echo [ERREUR] Le nombre de BJE doit etre un entier strictement positif.
+pause
+goto menu
 
 :done
 echo.

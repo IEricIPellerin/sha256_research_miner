@@ -186,3 +186,29 @@ __kernel void map_header_space_zones(__global const uchar* prefix,
     for(uint i=0;i<8U;++i) output_counts[output_count_base+i]=local_counts[i];
   }
 }
+
+// Independent opt-in sparse path. Each requested offset belongs to exactly one
+// work-item stride. Only uint32 nonces cross the PCIe boundary.
+__kernel void capture_sparse_hits(__global const uchar* prefix,
+                                  ulong nonce_start,
+                                  ulong nonce_count,
+                                  uint threshold_bits,
+                                  uint capacity,
+                                  volatile __global uint* total_hits,
+                                  __global uint* hit_nonces) {
+  const ulong gid=(ulong)get_global_id(0);
+  const ulong stride=(ulong)get_global_size(0);
+  uint midstate[8];
+  hs_midstate(prefix,midstate);
+  for(ulong offset=gid;offset<nonce_count;offset+=stride) {
+    const uint nonce=(uint)(nonce_start+offset);
+    uint digest[8];
+    hs_sha256d(prefix,midstate,nonce,digest);
+    uint value[8];
+    for(uint i=0;i<8U;++i) value[i]=hs_bswap(digest[7U-i]);
+    if(hs_leading_zero_bits(value)>=threshold_bits) {
+      const uint slot=atomic_inc(total_hits);
+      if(slot<capacity) hit_nonces[slot]=nonce;
+    }
+  }
+}

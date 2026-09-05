@@ -1,6 +1,7 @@
 //src\context_analysis_main.cpp
 #include "research/context_campaign.h"
 #include "research/context_phase2.h"
+#include "research/context_trajectory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +18,8 @@
 
 namespace cc = srm::research::context_campaign;
 namespace phase2 = srm::research::context_phase2;
+namespace trajectory = srm::research::context_trajectory;
+namespace header_space = srm::research::header_space;
 
 namespace {
 
@@ -44,6 +47,9 @@ struct Arguments {
   std::optional<std::size_t> bootstrap_replicates;
   std::optional<std::size_t> permutation_replicates;
   std::optional<std::size_t> selected_features;
+  std::optional<std::uint64_t> bje;
+  std::optional<std::string> block_id;
+  std::optional<std::uint32_t> nonce;
 };
 
 std::uint64_t u64(const std::string& value, const char* name) {
@@ -93,6 +99,13 @@ Arguments parse(const int argc, char** argv) {
     else if (key == "--bootstrap-replicates") args.bootstrap_replicates = static_cast<std::size_t>(u64(next(), "bootstrap replicate count"));
     else if (key == "--permutation-replicates") args.permutation_replicates = static_cast<std::size_t>(u64(next(), "permutation replicate count"));
     else if (key == "--selected-features") args.selected_features = static_cast<std::size_t>(u64(next(), "selected feature count"));
+    else if (key == "--bje") args.bje = u64(next(), "BJE count");
+    else if (key == "--block-id") args.block_id = next();
+    else if (key == "--nonce") {
+      const auto value = u64(next(), "nonce");
+      if (value > std::numeric_limits<std::uint32_t>::max()) throw std::invalid_argument("nonce exceeds uint32");
+      args.nonce = static_cast<std::uint32_t>(value);
+    }
     else throw std::invalid_argument("unknown argument: " + key);
   }
   return args;
@@ -164,12 +177,38 @@ void print_help() {
       "  phase2-refinement --campaign <dossier> [--check] [--yes]\n"
       "         Grille ridge etendue, branche T30 et permutation max-stat;\n"
       "         discovery-only, sortie immuable separee\n"
+      "  trajectory-new --bje N [--seed S] [--yes]\n"
+      "         Phase 3 POST_SCAN; capture T20 sparse; analyse discovery seule\n"
+      "  trajectory-resume [--campaign <dossier>]\n"
+      "  trajectory-analyze [--campaign <dossier>]\n"
+      "  trajectory-export-bje --campaign <dossier> --block-id <id>\n"
+      "  trajectory-trace --campaign <dossier> --block-id <id> --nonce N\n"
+      "  trajectory-smoke               Comparaison sparse CPU/GPU non scientifique\n"
       "  smoke [--smoke-nonces N]       Test court, jamais une vérité terrain\n\n"
       "Dimensionnement (au choix):\n"
       "  --total-blocks N\n"
       "  --minutes N\n"
       "  --prevhashes N --contexts N --blocks-per-context N\n\n"
       "Tous les profils sont des exemples visibles et modifiables. FULL n'impose jamais 10 000 blocs.\n";
+}
+
+void print_trajectory_preview(const trajectory::Plan& plan, const std::string& device) {
+  const auto value = trajectory::plan_preview_json(plan);
+  std::cout << "\n=== APERÇU PHASE 3 AVANT CONFIRMATION ===\n"
+            << "BJE demandés (exact)            : " << value["requested_bje"].get<std::uint64_t>() << '\n'
+            << "Prevhash distincts              : " << value["distinct_prevhashes"].get<std::size_t>() << '\n'
+            << "Contextes Stratum               : " << value["stratum_contexts"].get<std::size_t>() << '\n'
+            << "BJE / prevhash min-max          : " << value["bje_per_prevhash_min"] << " - " << value["bje_per_prevhash_max"] << '\n'
+            << "BJE / contexte min-max          : " << value["bje_per_context_min"] << " - " << value["bje_per_context_max"] << '\n'
+            << "Hashes totaux (N * 2^32)        : " << value["total_hashes"] << '\n'
+            << "Durée estimée (secondes)        : " << value["estimated_seconds"] << '\n'
+            << "Stockage sparse estimé (octets) : " << value["estimated_storage_bytes"] << '\n'
+            << "Seed                            : " << value["seed"] << '\n'
+            << "Device demandé                  : " << device << '\n'
+            << "Seuil production                : T20 (Y < 2^236)\n"
+            << "Partitions par prevhash         : " << value["partitions"].dump() << '\n';
+  for (const auto& warning : value["warnings"])
+    std::cout << "AVERTISSEMENT: " << warning.get<std::string>() << '\n';
 }
 
 void print_preview(const cc::CampaignPlan& plan) {
@@ -258,16 +297,44 @@ std::filesystem::path latest_complete_campaign(const std::filesystem::path& root
   return result;
 }
 
+std::filesystem::path latest_trajectory(const std::filesystem::path& root,
+                                        const bool incomplete_only) {
+  std::filesystem::path result;
+  std::filesystem::file_time_type newest{};
+  if (!std::filesystem::exists(root)) throw std::runtime_error("no trajectory campaign output directory");
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    const auto manifest_path = entry.path() / "manifest.json";
+    if (!entry.is_directory() || !std::filesystem::exists(manifest_path)) continue;
+    try {
+      const auto manifest = read_json(manifest_path);
+      if (manifest.value("experiment", "") != "PHASE_3_POST_SCAN_Y_SORT_TRAJECTORY") continue;
+      const auto checkpoint_path = entry.path() / "checkpoint.json";
+      const auto status = std::filesystem::exists(checkpoint_path)
+          ? read_json(checkpoint_path).value("status", "") : "";
+      if (incomplete_only && status == "COMPLETE") continue;
+      const auto time = entry.last_write_time();
+      if (result.empty() || time > newest) { result = entry.path(); newest = time; }
+    } catch (const std::exception&) {}
+  }
+  if (result.empty()) throw std::runtime_error(incomplete_only
+      ? "no incomplete Phase 3 campaign found" : "no Phase 3 campaign found");
+  return result;
+}
+
 int run(const int argc, char** argv) {
   auto args = parse(argc, argv);
   const auto phase2_command = args.command == "phase2" ||
                               args.command == "phase2-refinement";
+  const auto trajectory_command = args.command.rfind("trajectory-", 0U) == 0U;
   if (!phase2_command &&
       (args.phase2_check || args.partition || args.folds ||
        args.bootstrap_replicates || args.permutation_replicates ||
        args.selected_features)) {
     throw std::invalid_argument(
         "Phase 2 options are accepted only by phase2 or phase2-refinement");
+  }
+  if (trajectory_command && args.finalize_holdout) {
+    throw std::invalid_argument("Phase 3 refuses --finalize-holdout; holdout is sealed");
   }
   if (args.command == "help" || args.command == "--help" || args.command == "-h") {
     print_help();
@@ -283,6 +350,66 @@ int run(const int argc, char** argv) {
   const auto local_size = gpu.value("local_size", 64U);
   const auto zone_size = gpu.value("zone_size", 1048576ULL);
   const auto batch_zones = gpu.value("batch_zones", 256U);
+
+  if (trajectory_command) {
+    const auto trajectory_output = root / "results" / "trajectory_analysis";
+    if (args.command == "trajectory-resume") {
+      const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, true));
+      std::cout << "Reprise Phase 3: " << campaign.string() << '\n';
+      return trajectory::resume_campaign(campaign, kernel, device, local_size);
+    }
+    if (args.command == "trajectory-analyze") {
+      const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, false));
+      std::cout << trajectory::analyze_campaign(campaign).dump(2) << '\n';
+      return 0;
+    }
+    if (args.command == "trajectory-export-bje") {
+      if (!args.block_id) throw std::invalid_argument("trajectory-export-bje requires --block-id");
+      const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, false));
+      std::cout << "Export créé: " << trajectory::export_bje(campaign, *args.block_id).string() << '\n';
+      return 0;
+    }
+    if (args.command == "trajectory-trace") {
+      if (!args.block_id || !args.nonce) throw std::invalid_argument("trajectory-trace requires --block-id and --nonce");
+      const auto campaign = args.campaign.value_or(latest_trajectory(trajectory_output, false));
+      std::cout << "Trace créée: " << trajectory::trace_bjen(campaign, *args.block_id, *args.nonce).string() << '\n';
+      return 0;
+    }
+    std::size_t rejected = 0U;
+    const auto contexts = cc::load_archive(archive, &rejected);
+    if (args.command == "trajectory-smoke") {
+      std::cout << trajectory::run_smoke(contexts.front(), kernel, device, local_size).dump(2) << '\n';
+      return 0;
+    }
+    if (args.command != "trajectory-new") throw std::invalid_argument("unknown trajectory command: " + args.command);
+    if (!args.bje || *args.bje == 0U) throw std::invalid_argument("trajectory-new requires --bje N with N > 0");
+    if (!header_space::opencl_compiled() || header_space::enumerate_gpu_devices().empty()) {
+      throw std::runtime_error("trajectory-new requires an available OpenCL GPU");
+    }
+    const auto& benchmark_config = config.at("benchmark");
+    const auto benchmark_nonces = args.benchmark_nonces.value_or(
+        benchmark_config.value("nonce_count", 268435456ULL));
+    std::cout << "Benchmark court du débit GPU réel pour Phase 3...\n";
+    const auto measured = cc::benchmark(contexts.front(), kernel, device, benchmark_nonces,
+        benchmark_config.value("zone_size", 1048576ULL),
+        benchmark_config.value("batch_zones", 256U), local_size);
+    const trajectory::Request request{*args.bje, args.seed.value_or(0x5452414a454354ULL)};
+    const auto plan = trajectory::make_plan(contexts, request, measured);
+    print_trajectory_preview(plan, device);
+    if (!args.yes) {
+      std::cout << "\nConfirmer la création et le scan Phase 3 [O/N]: ";
+      std::string choice;
+      std::getline(std::cin, choice);
+      std::transform(choice.begin(), choice.end(), choice.begin(), ::toupper);
+      if (choice != "O" && choice != "OUI" && choice != "Y" && choice != "YES") {
+        std::cout << "Campagne Phase 3 annulée; aucun manifeste créé.\n";
+        return 0;
+      }
+    }
+    const auto campaign = trajectory::create_campaign(plan, trajectory_output, archive, kernel);
+    std::cout << "Manifeste Phase 3 créé: " << (campaign / "manifest.json").string() << '\n';
+    return trajectory::resume_campaign(campaign, kernel, device, local_size);
+  }
 
   if (args.command == "resume") {
     const auto campaign = args.campaign.value_or(latest_campaign(output));

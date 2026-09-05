@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -112,6 +113,14 @@ unsigned leading_zero_bits(const PowValue& value) {
   return total;
 }
 
+bool below_power_of_two_threshold(const PowValue& value,
+                                  const unsigned threshold_bits) {
+  if (threshold_bits == 0U || threshold_bits > 256U) {
+    throw std::invalid_argument("threshold_bits must be in [1,256]");
+  }
+  return leading_zero_bits(value) >= threshold_bits;
+}
+
 TailCounts classify_tail(const PowValue& value) {
   TailCounts counts{};
   const auto zeros = leading_zero_bits(value);
@@ -183,6 +192,61 @@ std::vector<ZoneStats> scan_cpu(const bitcoin::Header& input,
     result.push_back(zone);
   }
   return result;
+}
+
+SparseHitResult scan_sparse_hits_cpu(const bitcoin::Header& input,
+                                     const std::uint64_t nonce_start,
+                                     const std::uint64_t nonce_count,
+                                     const unsigned threshold_bits,
+                                     const std::size_t capacity) {
+  (void)make_zone_layout(nonce_start, nonce_count, nonce_count);
+  if (capacity == 0U) throw std::invalid_argument("sparse capacity must be positive");
+  // Validate even when the range happens to contain no hits.
+  PowValue zero{};
+  (void)below_power_of_two_threshold(zero, threshold_bits);
+  SparseHitResult result;
+  result.nonce_count = nonce_count;
+  result.capacity = capacity;
+  result.threshold_bits = threshold_bits;
+  result.nonces.reserve(std::min<std::uint64_t>(capacity, nonce_count));
+  auto header = input;
+  const auto started = std::chrono::steady_clock::now();
+  const auto end = nonce_start + nonce_count;
+  for (auto nonce64 = nonce_start; nonce64 < end; ++nonce64) {
+    const auto nonce = static_cast<std::uint32_t>(nonce64);
+    bitcoin::set_nonce(header, nonce);
+    const auto value = pow_value(crypto::sha256d(header));
+    if (!below_power_of_two_threshold(value, threshold_bits)) continue;
+    ++result.total_hit_count;
+    if (result.nonces.size() < capacity) result.nonces.push_back(nonce);
+  }
+  result.captured_count = result.nonces.size();
+  result.overflow = result.total_hit_count > result.captured_count;
+  result.elapsed_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - started).count();
+  return result;
+}
+
+SparseHitResult scan_sparse_hits_cpu_complete(const bitcoin::Header& header,
+                                              const std::uint64_t nonce_start,
+                                              const std::uint64_t nonce_count,
+                                              const unsigned threshold_bits,
+                                              const std::size_t initial_capacity) {
+  auto capacity = initial_capacity;
+  std::size_t retries = 0;
+  for (;;) {
+    auto result = scan_sparse_hits_cpu(header, nonce_start, nonce_count,
+                                       threshold_bits, capacity);
+    if (!result.overflow) {
+      result.overflow_retries = retries;
+      return result;
+    }
+    if (capacity > std::numeric_limits<std::size_t>::max() / 2U) {
+      throw std::overflow_error("sparse capture capacity cannot be doubled");
+    }
+    capacity *= 2U;
+    ++retries;
+  }
 }
 
 GlobalStats aggregate_zones(const std::vector<ZoneStats>& zones) {

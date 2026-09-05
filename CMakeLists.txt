@@ -119,6 +119,7 @@ add_library(srm_header_space
   src/research/header_space_opencl.cpp
   src/research/context_campaign.cpp
   src/research/context_phase2.cpp
+  src/research/context_trajectory.cpp
   src/research/sha256d_whitebox.cpp
   src/research/sha256d_whitebox_campaign.cpp
   src/research/sha256d_whitebox_transfer.cpp)
@@ -177,6 +178,7 @@ if(SRM_BUILD_TESTS)
     tests/test_best_pow.cpp
     tests/test_context_campaign.cpp
     tests/test_context_phase2.cpp
+    tests/test_context_trajectory.cpp
     tests/test_config.cpp
     tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp

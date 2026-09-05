@@ -2,6 +2,25 @@
 cmake_minimum_required(VERSION 3.24)
 project(sha256_research_miner VERSION 0.1.0 LANGUAGES CXX)
 
+execute_process(
+  COMMAND git rev-parse --verify HEAD
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE SRM_GIT_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+execute_process(
+  COMMAND git status --porcelain
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE SRM_GIT_STATUS
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(SRM_GIT_COMMIT)
+  set(SRM_CODE_VERSION "${SRM_GIT_COMMIT}")
+  if(SRM_GIT_STATUS)
+    string(APPEND SRM_CODE_VERSION "+working-tree")
+  endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -99,11 +118,15 @@ add_library(srm_header_space
   src/research/header_space.cpp
   src/research/header_space_opencl.cpp
   src/research/context_campaign.cpp
+  src/research/context_phase2.cpp
   src/research/sha256d_whitebox.cpp
   src/research/sha256d_whitebox_campaign.cpp
   src/research/sha256d_whitebox_transfer.cpp)
 target_include_directories(srm_header_space PUBLIC include)
 target_link_libraries(srm_header_space PUBLIC srm_core)
+if(SRM_CODE_VERSION)
+  target_compile_definitions(srm_header_space PRIVATE SRM_CODE_VERSION="${SRM_CODE_VERSION}")
+endif()
 if(OpenCL_FOUND)
   target_link_libraries(srm_header_space PRIVATE OpenCL::OpenCL)
 endif()
@@ -153,6 +176,7 @@ if(SRM_BUILD_TESTS)
     tests/test_result_logger.cpp
     tests/test_best_pow.cpp
     tests/test_context_campaign.cpp
+    tests/test_context_phase2.cpp
     tests/test_config.cpp
     tests/test_gpu_selection.cpp
     tests/test_work_allocator.cpp

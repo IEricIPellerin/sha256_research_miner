@@ -60,6 +60,47 @@ struct MerkleContextTransferArtifacts {
   std::string pairwise_transfer_csv;
 };
 
+using Sha256State = std::array<std::uint32_t, 8>;
+
+// Compact, exact view of one nonce-independent compression-1 round. This is
+// intentionally separate from the exhaustive 192-round artifact format: it is
+// suitable for bulk PRE_SCAN feature extraction without retaining large traces.
+struct PrescanRound {
+  unsigned round_index{};
+  Sha256State before{};
+  Sha256State after{};
+  std::uint32_t w{};
+  std::uint32_t k{};
+  std::uint32_t sigma0_a{};
+  std::uint32_t sigma1_e{};
+  std::uint32_t choice{};
+  std::uint32_t majority{};
+  std::uint32_t temp1{};
+  std::uint32_t temp2{};
+};
+
+struct PrescanCompression1 {
+  Sha256State midstate{};
+  std::array<std::uint32_t, 16> fixed_chunk_words{};
+  std::array<PrescanRound, 3> rounds{};
+  std::uint32_t round3_c3{};
+  std::uint32_t round3_t2{};
+  std::uint32_t w16{};
+  std::uint32_t w17{};
+  std::uint32_t w16_sigma0_w1{};
+  std::uint32_t w17_sigma0_w2{};
+  std::uint32_t w17_sigma1_w15{};
+  bool w16_nonce_independent{};
+  bool w17_nonce_independent{};
+  bool w18_nonce_dependent{};
+};
+
+// Reconstructs only information that is fixed by a serialized 76-byte Bitcoin
+// header prefix. W3 is deliberately not assigned a nonce value. The returned
+// rounds 0..2, C3, T2_round3, W16 and W17 are exact PRE_SCAN quantities.
+PrescanCompression1 build_prescan_compression1(
+    std::span<const std::uint8_t> header_prefix_76);
+
 // Frozen hashlib fixtures for synthetic Merkle-field context ids 0..63.
 const std::array<std::array<std::uint8_t, 32>, 64>&
 merkle_context_transfer_fields();

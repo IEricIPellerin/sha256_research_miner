@@ -30,6 +30,7 @@ echo [5] Analyser les resultats existants
 echo [6] Taille personnalisee
 echo [7] Smoke test tres court
 echo [8] Resume du corpus Stratum
+echo [9] PHASE 2 - enrichissement white-box (DISCOVERY seulement)
 echo [0] Quitter
 echo.
 set /p "CHOICE=Choix: "
@@ -42,10 +43,26 @@ if "%CHOICE%"=="5" "%ANALYZER%" analyze & goto done
 if "%CHOICE%"=="6" "%ANALYZER%" new --profile CUSTOM & goto done
 if "%CHOICE%"=="7" "%ANALYZER%" smoke --benchmark-nonces 1048576 --smoke-nonces 65536 & goto done
 if "%CHOICE%"=="8" "%ANALYZER%" corpus & goto done
+if "%CHOICE%"=="9" goto phase2
 if "%CHOICE%"=="0" exit /b 0
 echo Choix invalide.
 pause
 goto menu
+
+:phase2
+echo.
+echo CAMPAGNE: derniere campagne complete (CLI --campaign pour la choisir)
+echo MODE: PHASE 2A DISCOVERY ONLY
+echo Discovery utilise: oui
+echo Validation utilisee: NON
+echo Holdout utilise: NON
+echo Aucun scan GPU: oui
+echo Donnees sources modifiees: NON
+echo.
+set /p "CONFIRM2=Confirmer Phase 2A [O/N]: "
+if /i "%CONFIRM2%"=="O" "%ANALYZER%" phase2 --yes
+if /i "%CONFIRM2%"=="OUI" "%ANALYZER%" phase2 --yes
+goto done
 
 :done
 echo.

@@ -837,6 +837,95 @@ std::string markdown_summary(const nlohmann::json& trace,
 
 }  // namespace
 
+PrescanCompression1 build_prescan_compression1(
+    const std::span<const std::uint8_t> header_prefix_76) {
+  require(header_prefix_76.size() == 76U,
+          "PRE_SCAN header prefix is not exactly 76 bytes");
+
+  // The production SHA implementation supplies the compression-0 state. The
+  // 64-byte input necessarily creates a padding compression too; the state at
+  // the beginning of that second compression is exactly the required midstate.
+  const auto first_chunk_trace = crypto::sha256_with_trace(
+      header_prefix_76.first(64U), 64U);
+  require(first_chunk_trace.rounds.size() == 128U,
+          "production SHA trace did not expose the first-chunk midstate");
+
+  PrescanCompression1 result;
+  result.midstate = before_state(first_chunk_trace.rounds.at(64U));
+  for (std::size_t i = 0; i < 3U; ++i) {
+    result.fixed_chunk_words[i] =
+        read_be32(header_prefix_76.data() + 64U + i * 4U);
+  }
+  result.fixed_chunk_words[3] = 0U;  // symbolic nonce slot, never used below
+  result.fixed_chunk_words[4] = 0x80000000U;
+  result.fixed_chunk_words[15] = 640U;
+
+  const auto big_sigma0 = [](const std::uint32_t value) {
+    return std::rotr(value, 2) ^ std::rotr(value, 13) ^ std::rotr(value, 22);
+  };
+  const auto big_sigma1 = [](const std::uint32_t value) {
+    return std::rotr(value, 6) ^ std::rotr(value, 11) ^ std::rotr(value, 25);
+  };
+  const auto small_sigma0 = [](const std::uint32_t value) {
+    return std::rotr(value, 7) ^ std::rotr(value, 18) ^ (value >> 3U);
+  };
+  const auto small_sigma1 = [](const std::uint32_t value) {
+    return std::rotr(value, 17) ^ std::rotr(value, 19) ^ (value >> 10U);
+  };
+  const auto choice = [](const std::uint32_t e, const std::uint32_t f,
+                         const std::uint32_t g) {
+    return (e & f) ^ (~e & g);
+  };
+  const auto majority = [](const std::uint32_t a, const std::uint32_t b,
+                           const std::uint32_t c) {
+    return (a & b) ^ (a & c) ^ (b & c);
+  };
+
+  auto state = result.midstate;
+  for (unsigned round = 0U; round < 3U; ++round) {
+    auto& item = result.rounds[round];
+    item.round_index = round;
+    item.before = state;
+    item.w = result.fixed_chunk_words[round];
+    item.k = kRoundConstants[round];
+    item.sigma0_a = big_sigma0(state[0]);
+    item.sigma1_e = big_sigma1(state[4]);
+    item.choice = choice(state[4], state[5], state[6]);
+    item.majority = majority(state[0], state[1], state[2]);
+    item.temp1 = state[7] + item.sigma1_e + item.choice + item.k + item.w;
+    item.temp2 = item.sigma0_a + item.majority;
+    state = {item.temp1 + item.temp2, state[0], state[1], state[2],
+             state[3] + item.temp1, state[4], state[5], state[6]};
+    item.after = state;
+  }
+
+  result.round3_c3 = state[7] + big_sigma1(state[4]) +
+                     choice(state[4], state[5], state[6]) +
+                     kRoundConstants[3];
+  result.round3_t2 = big_sigma0(state[0]) +
+                     majority(state[0], state[1], state[2]);
+
+  const auto w0 = result.fixed_chunk_words[0];
+  const auto w1 = result.fixed_chunk_words[1];
+  const auto w2 = result.fixed_chunk_words[2];
+  const auto w15 = result.fixed_chunk_words[15];
+  result.w16_sigma0_w1 = small_sigma0(w1);
+  result.w16 = w0 + result.w16_sigma0_w1;
+  result.w17_sigma0_w2 = small_sigma0(w2);
+  result.w17_sigma1_w15 = small_sigma1(w15);
+  result.w17 = w1 + result.w17_sigma0_w2 + result.w17_sigma1_w15;
+  result.w16_nonce_independent = true;
+  result.w17_nonce_independent = true;
+
+  const auto w18_for = [&](const std::uint32_t nonce_word) {
+    return w2 + small_sigma0(nonce_word) + small_sigma1(result.w16);
+  };
+  result.w18_nonce_dependent = w18_for(0U) != w18_for(1U);
+  require(result.w18_nonce_dependent,
+          "W18 dependency witness unexpectedly collapsed");
+  return result;
+}
+
 const SpecimenMetadata& genesis_specimen_metadata() {
   static const SpecimenMetadata metadata{
       "bitcoin_genesis_sha256d_whitebox_reference",

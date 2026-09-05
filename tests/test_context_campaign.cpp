@@ -295,10 +295,89 @@ TEST_CASE("sealed holdout is opaque until explicit immutable finalization") {
   REQUIRE_EQ(opened.at("corpus").at("complete_blocks").get<std::size_t>(), 3U);
   const auto evaluation_path = directory / "holdout_evaluation.json";
   REQUIRE(std::filesystem::exists(evaluation_path));
+  const auto evaluation = nlohmann::json::parse(read_all(evaluation_path));
+  REQUIRE_EQ(evaluation.at("campaign_id").get<std::string>(), "holdout-test");
+  REQUIRE(evaluation.contains("finalized_at_utc"));
+  REQUIRE(evaluation.contains("policy"));
   const auto immutable = read_all(evaluation_path);
 
   write_analysis_fixture(directory, 2.0e300, 1U);
   (void)cc::analyze_campaign(directory, true);
   REQUIRE_EQ(read_all(evaluation_path), immutable);
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("holdout finalization rejects a stale artifact without campaign identity") {
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("srm_context_stale_holdout_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(directory);
+  {
+    std::ofstream output(directory / "manifest.json", std::ios::binary);
+    output << R"({"schema_version":1,"campaign_id":"current-campaign"})";
+  }
+  write_analysis_fixture(directory, 100.0, 1U);
+  {
+    std::ofstream output(directory / "holdout_evaluation.json", std::ios::binary);
+    output << R"({"schema_version":1,"finalized_at_utc":"old","policy":"foreign legacy"})";
+  }
+  bool rejected = false;
+  try {
+    (void)cc::analyze_campaign(directory, true);
+  } catch (const std::runtime_error& error) {
+    rejected = std::string(error.what()).find("no campaign_id") != std::string::npos;
+  }
+  REQUIRE(rejected);
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("holdout finalization rejects an artifact from another campaign") {
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("srm_context_foreign_holdout_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(directory);
+  {
+    std::ofstream output(directory / "manifest.json", std::ios::binary);
+    output << R"({"schema_version":1,"campaign_id":"current-campaign"})";
+  }
+  write_analysis_fixture(directory, 100.0, 1U);
+  {
+    std::ofstream output(directory / "holdout_evaluation.json", std::ios::binary);
+    output << R"({"schema_version":1,"campaign_id":"different-campaign","finalized_at_utc":"old","policy":"foreign"})";
+  }
+  bool rejected = false;
+  try {
+    (void)cc::analyze_campaign(directory, true);
+  } catch (const std::runtime_error& error) {
+    rejected = std::string(error.what()).find("different-campaign") != std::string::npos;
+  }
+  REQUIRE(rejected);
+  std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("holdout finalization preserves an immutable artifact from the same campaign") {
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("srm_context_current_holdout_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(directory);
+  {
+    std::ofstream output(directory / "manifest.json", std::ios::binary);
+    output << R"({"schema_version":1,"campaign_id":"current-campaign"})";
+  }
+  write_analysis_fixture(directory, 100.0, 1U);
+  const auto immutable = std::string(
+      R"({"schema_version":1,"campaign_id":"current-campaign","finalized_at_utc":"frozen","policy":"frozen","marker":42})");
+  {
+    std::ofstream output(directory / "holdout_evaluation.json", std::ios::binary);
+    output << immutable;
+  }
+  {
+    std::ofstream output(directory / "analysis_summary.json", std::ios::binary);
+    output << R"({"campaign_id":"current-campaign","frozen":true})";
+  }
+  const auto frozen_summary = read_all(directory / "analysis_summary.json");
+  (void)cc::analyze_campaign(directory, true);
+  REQUIRE_EQ(read_all(directory / "holdout_evaluation.json"), immutable);
+  REQUIRE_EQ(read_all(directory / "analysis_summary.json"), frozen_summary);
   std::filesystem::remove_all(directory);
 }

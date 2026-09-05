@@ -1,5 +1,6 @@
 //src\context_analysis_main.cpp
 #include "research/context_campaign.h"
+#include "research/context_phase2.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include <string>
 
 namespace cc = srm::research::context_campaign;
+namespace phase2 = srm::research::context_phase2;
 
 namespace {
 
@@ -36,6 +38,12 @@ struct Arguments {
   std::string device;
   bool yes{false};
   bool finalize_holdout{false};
+  bool phase2_check{false};
+  std::optional<std::string> partition;
+  std::optional<std::size_t> folds;
+  std::optional<std::size_t> bootstrap_replicates;
+  std::optional<std::size_t> permutation_replicates;
+  std::optional<std::size_t> selected_features;
 };
 
 std::uint64_t u64(const std::string& value, const char* name) {
@@ -79,6 +87,12 @@ Arguments parse(const int argc, char** argv) {
     else if (key == "--smoke-nonces") args.smoke_nonces = u64(next(), "smoke nonce count");
     else if (key == "--yes") args.yes = true;
     else if (key == "--finalize-holdout") args.finalize_holdout = true;
+    else if (key == "--check" || key == "--dry-run") args.phase2_check = true;
+    else if (key == "--partition") args.partition = next();
+    else if (key == "--folds") args.folds = static_cast<std::size_t>(u64(next(), "fold count"));
+    else if (key == "--bootstrap-replicates") args.bootstrap_replicates = static_cast<std::size_t>(u64(next(), "bootstrap replicate count"));
+    else if (key == "--permutation-replicates") args.permutation_replicates = static_cast<std::size_t>(u64(next(), "permutation replicate count"));
+    else if (key == "--selected-features") args.selected_features = static_cast<std::size_t>(u64(next(), "selected feature count"));
     else throw std::invalid_argument("unknown argument: " + key);
   }
   return args;
@@ -144,6 +158,8 @@ void print_help() {
       "  new  --profile ...             Benchmark, aperçu, confirmation, campagne\n"
       "  resume --campaign <dossier>    Reprendre sans rescanner les blocs complets\n"
       "  analyze --campaign <dossier> [--finalize-holdout]\n"
+      "  phase2 --campaign <dossier> [--check] [--yes]\n"
+      "         Phase 2A discovery-only; refuse validation/holdout/finalisation\n"
       "  smoke [--smoke-nonces N]       Test court, jamais une vérité terrain\n\n"
       "Dimensionnement (au choix):\n"
       "  --total-blocks N\n"
@@ -222,8 +238,30 @@ std::filesystem::path latest_campaign(const std::filesystem::path& root) {
   return result;
 }
 
+std::filesystem::path latest_complete_campaign(const std::filesystem::path& root) {
+  std::filesystem::path result;
+  std::filesystem::file_time_type newest{};
+  if (!std::filesystem::exists(root)) throw std::runtime_error("no campaign output directory");
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    const auto checkpoint = entry.path() / "checkpoint.json";
+    if (!entry.is_directory() || !std::filesystem::exists(entry.path() / "manifest.json") ||
+        !std::filesystem::exists(checkpoint)) continue;
+    if (read_json(checkpoint).value("status", "") != "COMPLETE") continue;
+    const auto time = entry.last_write_time();
+    if (result.empty() || time > newest) { result = entry.path(); newest = time; }
+  }
+  if (result.empty()) throw std::runtime_error("no complete campaign found");
+  return result;
+}
+
 int run(const int argc, char** argv) {
   auto args = parse(argc, argv);
+  if (args.command != "phase2" &&
+      (args.phase2_check || args.partition || args.folds ||
+       args.bootstrap_replicates || args.permutation_replicates ||
+       args.selected_features)) {
+    throw std::invalid_argument("Phase 2 options are accepted only by the phase2 command");
+  }
   if (args.command == "help" || args.command == "--help" || args.command == "-h") {
     print_help();
     return 0;
@@ -247,6 +285,44 @@ int run(const int argc, char** argv) {
   if (args.command == "analyze") {
     const auto campaign = args.campaign.value_or(latest_campaign(output));
     std::cout << cc::analyze_campaign(campaign, args.finalize_holdout).dump(2) << '\n';
+    return 0;
+  }
+  if (args.command == "phase2") {
+    if (args.finalize_holdout) {
+      throw std::invalid_argument(
+          "Phase 2A refuses --finalize-holdout; holdout is invisible");
+    }
+    if (args.partition && *args.partition != "discovery") {
+      throw std::invalid_argument(
+          "Phase 2A refuses --partition " + *args.partition +
+          "; only discovery is admissible");
+    }
+    const auto campaign = args.campaign.value_or(latest_complete_campaign(output));
+    std::cout << "\nCAMPAGNE: " << campaign.string() << '\n'
+              << "MODE: PHASE 2A DISCOVERY ONLY\n"
+              << "Discovery utilise: oui\n"
+              << "Validation utilisee: NON\n"
+              << "Holdout utilise: NON\n"
+              << "Aucun scan GPU: oui\n"
+              << "Donnees sources modifiees: NON\n";
+    phase2::Options options;
+    options.check_only = args.phase2_check;
+    if (args.seed) options.seed = *args.seed;
+    if (args.folds) options.outer_folds = *args.folds;
+    if (args.bootstrap_replicates) options.bootstrap_replicates = *args.bootstrap_replicates;
+    if (args.permutation_replicates) options.permutation_replicates = *args.permutation_replicates;
+    if (args.selected_features) options.selected_feature_count = *args.selected_features;
+    if (!options.check_only && !args.yes) {
+      std::cout << "Confirmer la creation de phase2_discovery_v1 [O/N]: ";
+      std::string choice;
+      std::getline(std::cin, choice);
+      std::transform(choice.begin(), choice.end(), choice.begin(), ::toupper);
+      if (choice != "O" && choice != "OUI" && choice != "Y" && choice != "YES") {
+        std::cout << "Phase 2A annulee; aucun artefact cree.\n";
+        return 0;
+      }
+    }
+    std::cout << phase2::run(campaign, options).dump(2) << '\n';
     return 0;
   }
 

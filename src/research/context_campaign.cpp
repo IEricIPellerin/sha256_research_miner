@@ -840,6 +840,31 @@ int run_smoke(const CampaignPlan& plan,
 nlohmann::json analyze_campaign(const std::filesystem::path& directory,
                                 const bool finalize_holdout) {
   const auto manifest = checkpoint::StateStore(directory / "manifest.json").load_or(nlohmann::json());
+  const auto campaign_id = manifest.value("campaign_id", directory.filename().string());
+  const auto holdout_path = directory / "holdout_evaluation.json";
+  bool existing_holdout_is_current = false;
+  if (finalize_holdout && std::filesystem::exists(holdout_path)) {
+    const auto existing = checkpoint::StateStore(holdout_path).load_or(nlohmann::json());
+    if (!existing.contains("campaign_id")) {
+      throw std::runtime_error(
+          "refusing holdout finalization: existing holdout_evaluation.json has no campaign_id");
+    }
+    if (existing.at("campaign_id").get<std::string>() != campaign_id) {
+      throw std::runtime_error(
+          "refusing holdout finalization: existing holdout_evaluation.json belongs to campaign " +
+          existing.at("campaign_id").get<std::string>() + ", not " + campaign_id);
+    }
+    existing_holdout_is_current = true;
+  }
+  if (existing_holdout_is_current) {
+    const auto frozen_summary =
+        checkpoint::StateStore(directory / "analysis_summary.json").load_or(nlohmann::json());
+    if (frozen_summary.empty()) {
+      throw std::runtime_error(
+          "refusing holdout recalculation: matching immutable evaluation exists but analysis_summary.json is missing");
+    }
+    return frozen_summary;
+  }
   std::unordered_map<std::string, nlohmann::json> features;
   {
     std::ifstream input(directory / "features.jsonl", std::ios::binary);
@@ -1010,7 +1035,7 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
     return variance / (means.size() - 1U);
   };
   nlohmann::json summary = {
-      {"schema_version", 1}, {"campaign_id", manifest.value("campaign_id", directory.filename().string())},
+      {"schema_version", 1}, {"campaign_id", campaign_id},
       {"holdout_finalized", finalize_holdout},
       {"corpus", {{"prevhashes", prevhashes.size()}, {"contexts", contexts.size()},
                   {"extranonce2", rows.size()}, {"complete_blocks", rows.size()},
@@ -1072,10 +1097,10 @@ nlohmann::json analyze_campaign(const std::filesystem::path& directory,
     output << report.str();
   }
   if (finalize_holdout) {
-    const auto holdout_path = directory / "holdout_evaluation.json";
-    if (!std::filesystem::exists(holdout_path)) {
+    if (!existing_holdout_is_current) {
       checkpoint::StateStore(holdout_path).save({
-          {"schema_version", 1}, {"finalized_at_utc", logging::ResultLogger::utc_now()},
+          {"schema_version", 1}, {"campaign_id", campaign_id},
+          {"finalized_at_utc", logging::ResultLogger::utc_now()},
           {"policy", "evaluated once after frozen baselines"},
           {"feature_correlations", correlations}, {"rankings", rankings},
           {"conclusion", conclusion}});
